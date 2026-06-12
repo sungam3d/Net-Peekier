@@ -113,6 +113,14 @@ An app's **own limit is capped by its tag's limit**: you can give a tagged app a
 tag's cap and clamps your entry to it, and the manager marks a limit that comes
 purely from the tag with "(tag)".
 
+**Blocking a tag blocks its members.** When a tag has a block rule, every
+process carrying that tag is treated as blocked (shown in red), even though the
+block lives on the tag rather than on each app.
+
+**Removing a tag from a process** (right-click ▸ *Remove tag*, or clear the tag
+field in the manager) drops it from the firewall rules list entirely if it has
+no other block or limit.
+
 ## Main-list right-click
 
 Right-click a process row for: **Show connections**, **End Process** (terminate,
@@ -158,13 +166,25 @@ Windows, created via `netsh`) and the **WinDivert driver** (a system driver
 installed with the `pydivert` package). Both are unavoidable for selective
 blocking and throttling.
 
-## Rows & sorting
+## Rows, blocking & sorting
 
 Every other row is shaded a very light blue so adjacent rows are easy to tell
-apart. Every table sorts by clicking a column header; click again to reverse,
-and an arrow marks the active column. The chosen order is preserved across the
+apart. **Blocked** processes stand out further: light-red background with red
+text, and when you click one it highlights solid red with white text (normal
+rows keep the usual blue selection). A block overrides every other rule — a
+blocked row shows "blocked" instead of any limit.
+
+A process counts as blocked if it's blocked directly **or** it carries a tag
+that has a block rule; tag-blocked apps are marked "Yes (tag)" in the manager.
+
+Every table sorts by clicking a column header; click again to reverse, and an
+arrow marks the active column. The chosen order is preserved across the
 once-a-second refresh, and in the application list it also orders the PID rows
 within each expanded program group.
+
+**Column widths are remembered.** Resize any column and the widths are saved to
+`settings.txt` when the window closes, so they're restored next time you open
+that window.
 
 ## How packets are attributed to a process
 
@@ -195,7 +215,8 @@ netpeekier/
     firewall_window.py     firewall/limits manager + tag-group rules
     tag_picker.py          tag chooser (drop-down of existing + free input)
     settings_window.py     speed unit + packet-log purge interval
-    treesort.py            reusable click-to-sort + row striping
+    treesort.py            reusable click-to-sort for every table
+    tablestyle.py          row striping, blocked colours, column-width saving
 ```
 
 ## Limitations & honest notes

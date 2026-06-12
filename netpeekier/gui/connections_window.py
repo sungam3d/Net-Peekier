@@ -13,9 +13,12 @@ from typing import Dict
 from ..monitor import Monitor
 from ..util import human_speed, human_bytes, unit_suffix
 from .packets_window import PacketsWindow
-from .treesort import TreeSorter, configure_stripes, apply_stripes
+from .treesort import TreeSorter
+from .tablestyle import init_table, apply_stripes, restore_widths, capture_widths
 
 REFRESH_MS = 1000
+_COLS = ("proto", "local", "dir", "remote", "status",
+         "up", "down", "tup", "tdown")
 
 
 class ConnectionsWindow(tk.Toplevel):
@@ -62,13 +65,18 @@ class ConnectionsWindow(tk.Toplevel):
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self.tree.tag_configure("listen", foreground="#666666")
-        self.tree.tag_configure("active", foreground="#0a7d00")
-        configure_stripes(self.tree)
+        init_table(self.tree)
+        self.tree.tag_configure("fg_listen", foreground="#666666")
+        restore_widths(self.tree, "connections", self.monitor.settings, _COLS)
+        self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.tree.bind("<Double-1>", self._on_double_click)
 
         self.after(REFRESH_MS, self._refresh)
+
+    def _close(self) -> None:
+        capture_widths(self.tree, "connections", self.monitor.settings, _COLS)
+        self.destroy()
 
     def _refresh(self) -> None:
         if not self.winfo_exists():

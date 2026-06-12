@@ -237,6 +237,16 @@ class Monitor:
         return capped_up, capped_down, from_tag
 
     # ---- rule queries (for the manager windows) ---------------------------
+    def is_blocked(self, exe: str) -> bool:
+        """Effective block state: a direct block OR membership of a blocked tag.
+        A block overrides all other rules."""
+        if not exe:
+            return False
+        if exe in self.settings.blocked_exes:
+            return True
+        tag = self.settings.exe_tags.get(exe)
+        return bool(tag) and tag in self.settings.tag_blocked
+
     def list_blocked(self) -> set[str]:
         return set(self.settings.blocked_exes)
 
@@ -244,15 +254,18 @@ class Monitor:
         return {k: (v[0], v[1]) for k, v in self.settings.exe_limits.items()}
 
     def managed_apps(self) -> Dict[str, tuple]:
-        """{exe: (blocked, (eff_up, eff_down), tag, from_tag)} per managed app.
-        The limit shown is the EFFECTIVE cap (own limit clamped by tag)."""
+        """{exe: (blocked, (eff_up, eff_down), tag, from_tag, via_tag)}.
+        `blocked` is EFFECTIVE (direct or via a blocked tag); `via_tag` is True
+        when the block comes from the tag rather than the app itself."""
         s = self.settings
         exes = set(s.blocked_exes) | set(s.exe_limits) | set(s.exe_tags)
         out = {}
         for exe in exes:
             eup, edown, from_tag = self.effective_limit(exe)
-            out[exe] = (exe in s.blocked_exes, (eup, edown),
-                        s.exe_tags.get(exe, ""), from_tag)
+            tag = s.exe_tags.get(exe, "")
+            direct = exe in s.blocked_exes
+            via_tag = bool(tag) and tag in s.tag_blocked
+            out[exe] = (direct or via_tag, (eup, edown), tag, from_tag, via_tag)
         return out
 
     # ---- worker -----------------------------------------------------------
@@ -281,6 +294,9 @@ class Monitor:
 
         s = self.settings
         blocked_exes = set(s.blocked_exes)
+        # a tag with a block marks all its members as (effectively) blocked
+        for btag in s.tag_blocked:
+            blocked_exes.update(s.exes_with_tag(btag))
         # exes that the limiter must police (own limit, or a limited tag)
         limited_exes = self.backend.limited_exes()
         enforced_ports: set = set()

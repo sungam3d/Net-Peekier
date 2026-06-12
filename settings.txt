@@ -1,26 +1,63 @@
 {
   "speed_unit": "KB/s",
   "packet_purge_minutes": 1,
-  "blocked_exes": [
-    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.UserSessionHelper.exe",
-    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\dll\\ArmourySocketServer\\ArmourySocketServer.exe",
-    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\asus_framework.exe"
-  ],
+  "blocked_exes": [],
   "exe_limits": {},
   "exe_tags": {
     "C:\\Program Files\\Royal TS V7\\RoyalTS.exe": "remote desktop",
     "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe": "remote desktop",
     "C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe": "net",
     "C:\\Users\\Magnus\\AppData\\Local\\GitHubDesktop\\app-3.5.12\\GitHubDesktop.exe": "net",
-    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.Service.exe": "Blocked",
-    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.UserSessionHelper.exe": "Blocked",
-    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\dll\\ArmourySocketServer\\ArmourySocketServer.exe": "Blocked",
-    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\asus_framework.exe": "Blocked",
     "C:\\Program Files (x86)\\Acronis\\TrueImageHome\\Agent\\aakore.exe": "Blocked",
     "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": "Blocked"
   },
   "tag_limits": {},
   "tag_blocked": [
     "Blocked"
-  ]
+  ],
+  "column_widths": {
+    "tagrules": {
+      "#0": 134,
+      "members": 69,
+      "blocked": 77,
+      "up": 125,
+      "down": 124
+    },
+    "firewall": {
+      "#0": 149,
+      "blocked": 72,
+      "up": 105,
+      "down": 105,
+      "tag": 89,
+      "path": 249
+    },
+    "packets": {
+      "time": 191,
+      "local": 167,
+      "dir": 52,
+      "remote": 167,
+      "proto": 87,
+      "len": 77
+    },
+    "connections": {
+      "proto": 60,
+      "local": 160,
+      "dir": 40,
+      "remote": 170,
+      "status": 110,
+      "up": 85,
+      "down": 85,
+      "tup": 95,
+      "tdown": 96
+    },
+    "main": {
+      "#0": 199,
+      "up": 92,
+      "down": 92,
+      "tup": 99,
+      "tdown": 99,
+      "tag": 94,
+      "ports": 174
+    }
+  }
 }

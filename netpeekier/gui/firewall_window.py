@@ -24,7 +24,8 @@ from typing import Optional
 from .. import firewall
 from ..monitor import Monitor
 from ..util import human_speed
-from .treesort import TreeSorter, configure_stripes, apply_stripes
+from .treesort import TreeSorter
+from .tablestyle import init_table, apply_stripes, restore_widths, capture_widths
 
 REFRESH_MS = 1500
 
@@ -38,7 +39,8 @@ class RuleDialog(tk.Toplevel):
 
     def __init__(self, master, exe: str,
                  blocked: bool, up_bps: int, down_bps: int,
-                 tag: str = "", existing_tags=None, tag_caps=None) -> None:
+                 tag: str = "", existing_tags=None, tag_caps=None,
+                 tag_blocked: bool = False) -> None:
         super().__init__(master)
         self.title("App rule")
         self.resizable(False, False)
@@ -47,6 +49,7 @@ class RuleDialog(tk.Toplevel):
         self._existing_tags = sorted(set(existing_tags or []))
         # tag_caps: {tag -> (up_bps, down_bps)} so we can show/enforce the max
         self._tag_caps = dict(tag_caps or {})
+        self._tag_blocked = tag_blocked
 
         self.exe = exe
         pad = {"padx": 8, "pady": 4}
@@ -65,6 +68,12 @@ class RuleDialog(tk.Toplevel):
         tk.Checkbutton(self, text="Block all traffic (firewall)",
                        variable=self.var_block).grid(
             row=2, column=0, columnspan=2, sticky="w", **pad)
+        if self._tag_blocked:
+            tk.Label(self, fg="#b00000", justify="left", anchor="w",
+                     wraplength=340,
+                     text="This app is also blocked by its tag's rule; that "
+                          "block stays until you change the tag rule.").grid(
+                row=2, column=0, columnspan=2, sticky="e", padx=8)
 
         tk.Label(self, text="Upload limit (KB/s, 0 = unlimited):").grid(
             row=3, column=0, sticky="w", **pad)
@@ -203,7 +212,15 @@ class FirewallManagerWindow(tk.Toplevel):
 
         self._build_table()
         self._build_buttons()
+        restore_widths(self.tree, "firewall", self.monitor.settings,
+                       ("#0", "blocked", "up", "down", "tag", "path"))
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self._refresh()
+
+    def _close(self) -> None:
+        capture_widths(self.tree, "firewall", self.monitor.settings,
+                       ("#0", "blocked", "up", "down", "tag", "path"))
+        self.destroy()
 
     # ---- layout -----------------------------------------------------------
     def _build_table(self) -> None:
@@ -235,8 +252,7 @@ class FirewallManagerWindow(tk.Toplevel):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        self.tree.tag_configure("blocked", foreground="#b00000")
-        configure_stripes(self.tree)
+        init_table(self.tree)
         self.tree.bind("<Double-1>", lambda _e: self._edit())
 
     def _build_buttons(self) -> None:
@@ -252,7 +268,7 @@ class FirewallManagerWindow(tk.Toplevel):
             side="left", padx=2)
         tk.Button(bar, text="Tag rules...", command=self._open_tag_rules).pack(
             side="left", padx=10)
-        tk.Button(bar, text="Close", command=self.destroy).pack(
+        tk.Button(bar, text="Close", command=self._close).pack(
             side="right", padx=2)
         tk.Button(bar, text="Refresh", command=self._refresh).pack(
             side="right", padx=2)
@@ -271,17 +287,21 @@ class FirewallManagerWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         sortkeys: dict = {}
         rowtags: dict = {}
-        for exe, (blocked, (up, down), tag, from_tag) in \
+        for exe, (blocked, (up, down), tag, from_tag, via_tag) in \
                 self.monitor.managed_apps().items():
             iid = exe
-            # mark a limit that is inherited purely from the tag cap
-            suffix = "  (tag)" if from_tag else ""
-            up_txt = _fmt_limit(up) + (suffix if up else "")
-            down_txt = _fmt_limit(down) + (suffix if down else "")
+            # A block overrides everything, so don't clutter the row with limits.
+            if blocked:
+                blk_txt = "Yes (tag)" if via_tag else "Yes"
+                up_txt = down_txt = "blocked"
+            else:
+                blk_txt = "No"
+                suffix = "  (tag)" if from_tag else ""
+                up_txt = _fmt_limit(up) + (suffix if up else "")
+                down_txt = _fmt_limit(down) + (suffix if down else "")
             self.tree.insert(
                 "", "end", iid=iid, text=os.path.basename(exe) or exe,
-                values=("Yes" if blocked else "No",
-                        up_txt, down_txt, tag, exe))
+                values=(blk_txt, up_txt, down_txt, tag, exe))
             rowtags[iid] = ("blocked",) if blocked else ()
             sortkeys[iid] = {
                 "#0": (os.path.basename(exe) or exe).lower(),
@@ -332,13 +352,17 @@ class FirewallManagerWindow(tk.Toplevel):
                 for t in self.monitor.settings.tag_limits}
 
     def _edit_exe(self, exe: str) -> None:
-        managed = self.monitor.managed_apps().get(exe, (False, (0, 0), "", False))
-        blocked, (up, down), tag, _from_tag = managed
-        # show the app's OWN limit in the dialog, not the tag-inherited one
+        managed = self.monitor.managed_apps().get(
+            exe, (False, (0, 0), "", False, False))
+        blocked, (up, down), tag, _from_tag, via_tag = managed
+        # The dialog edits the app's OWN block checkbox; a block that comes from
+        # a blocked TAG isn't the app's own state, so present the direct block.
+        direct_block = exe in self.monitor.list_blocked()
         own_up, own_down = self.monitor.settings.exe_limit(exe)
-        dlg = RuleDialog(self, exe, blocked, own_up, own_down, tag,
+        dlg = RuleDialog(self, exe, direct_block, own_up, own_down, tag,
                          existing_tags=self.monitor.settings.all_tags(),
-                         tag_caps=self._tag_caps())
+                         tag_caps=self._tag_caps(),
+                         tag_blocked=via_tag)
         self.wait_window(dlg)
         if dlg.result is None:
             return
@@ -409,11 +433,15 @@ class TagRulesWindow(tk.Toplevel):
         self.tree.column("blocked", width=62, anchor="center")
         self.tree.column("up", width=110, anchor="e")
         self.tree.column("down", width=110, anchor="e")
-        configure_stripes(self.tree)
+        init_table(self.tree)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
+        self._tcols = ("#0", "members", "blocked", "up", "down")
+        restore_widths(self.tree, "tagrules", self.monitor.settings,
+                       self._tcols)
+        self.protocol("WM_DELETE_WINDOW", self._close)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         self.tree.tag_configure("blocked", foreground="#b00000")
@@ -431,10 +459,15 @@ class TagRulesWindow(tk.Toplevel):
             side="left", padx=2)
         tk.Button(bar, text="Remove rule", command=self._remove_rule).pack(
             side="left", padx=2)
-        tk.Button(bar, text="Close", command=self.destroy).pack(
+        tk.Button(bar, text="Close", command=self._close).pack(
             side="right", padx=2)
 
         self._refresh()
+
+    def _close(self) -> None:
+        capture_widths(self.tree, "tagrules", self.monitor.settings,
+                       self._tcols)
+        self.destroy()
 
     def _refresh(self) -> None:
         if not self.winfo_exists():

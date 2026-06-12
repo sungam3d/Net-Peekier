@@ -15,7 +15,10 @@ from typing import List
 from ..models import Packet
 from ..monitor import Monitor
 from ..paths import ensure_log_dir
-from .treesort import TreeSorter, configure_stripes, apply_stripes
+from .treesort import TreeSorter
+from .tablestyle import init_table, apply_stripes, restore_widths, capture_widths
+
+_PCOLS = ("time", "local", "dir", "remote", "proto", "len")
 
 REFRESH_MS = 1000
 
@@ -46,7 +49,13 @@ class PacketsWindow(tk.Toplevel):
         self._build_dump()
         self._build_buttons()
 
+        restore_widths(self.tree, "packets", self.monitor.settings, _PCOLS)
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(REFRESH_MS, self._refresh)
+
+    def _close(self) -> None:
+        capture_widths(self.tree, "packets", self.monitor.settings, _PCOLS)
+        self.destroy()
 
     def _build_list(self) -> None:
         top = tk.Frame(self)
@@ -75,9 +84,7 @@ class PacketsWindow(tk.Toplevel):
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self.tree.tag_configure("out", foreground="#0a7d00")
-        self.tree.tag_configure("in", foreground="#1a4fc4")
-        configure_stripes(self.tree)
+        init_table(self.tree)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Button-3>", self._on_right_click)
 
@@ -105,7 +112,7 @@ class PacketsWindow(tk.Toplevel):
         tk.Button(bar, text="Clear", command=self._clear).pack(side="left")
         tk.Button(bar, text="Export...", command=self._export).pack(
             side="right", padx=6)
-        tk.Button(bar, text="Close", command=self.destroy).pack(side="right")
+        tk.Button(bar, text="Close", command=self._close).pack(side="right")
 
     # ---- refresh ----------------------------------------------------------
     def _refresh(self) -> None:

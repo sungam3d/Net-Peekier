@@ -37,6 +37,8 @@ class Settings:
     exe_tags: Dict[str, str] = field(default_factory=dict)          # exe -> tag
     tag_limits: Dict[str, List[int]] = field(default_factory=dict)  # tag -> [up,down] bytes/s
     tag_blocked: List[str] = field(default_factory=list)            # tags blocked
+    # remembered column widths: {window_key: {column_id: width}}
+    column_widths: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     # ---- convenience views -----------------------------------------------
     def exe_limit(self, exe: str) -> Tuple[int, int]:
@@ -78,6 +80,9 @@ class Settings:
             s.tag_limits = {k: [int(v[0]), int(v[1])]
                             for k, v in data.get("tag_limits", {}).items()}
             s.tag_blocked = list(data.get("tag_blocked", []))
+            cw = data.get("column_widths", {})
+            s.column_widths = {k: {c: int(w) for c, w in v.items()}
+                               for k, v in cw.items()}
         except Exception:
             pass
         return s
@@ -93,6 +98,7 @@ class Settings:
                     "exe_tags": self.exe_tags,
                     "tag_limits": self.tag_limits,
                     "tag_blocked": self.tag_blocked,
+                    "column_widths": self.column_widths,
                 }, f, indent=2)
         except Exception:
             pass

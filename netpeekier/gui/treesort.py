@@ -82,28 +82,6 @@ def _norm(value):
 # light zebra striping ------------------------------------------------------
 STRIPE_EVEN = "_stripe_even"
 STRIPE_ODD = "_stripe_odd"
-
-
-def configure_stripes(tree, even_bg: str = "#eef4fb", odd_bg: str = "#ffffff"):
-    """Set up the two stripe tags. Call once when building a tree. The default
-    even-row colour is a very light blue that only just stands out."""
-    tree.tag_configure(STRIPE_EVEN, background=even_bg)
-    tree.tag_configure(STRIPE_ODD, background=odd_bg)
-
-
-def apply_stripes(tree, base_tags: dict, parent: str = "", counter=None):
-    """Walk the tree in display order and give every other visible row a light
-    background, preserving each row's status tag (colour) from `base_tags`
-    ({iid: (tag, ...)}). Recurses so grouped/expanded rows stripe correctly.
-    """
-    if counter is None:
-        counter = [0]
-    for iid in tree.get_children(parent):
-        stripe = STRIPE_EVEN if counter[0] % 2 == 0 else STRIPE_ODD
-        counter[0] += 1
-        base = base_tags.get(iid, ())
-        if isinstance(base, str):
-            base = (base,) if base else ()
-        # stripe first so the status tag's foreground wins on shared options
-        tree.item(iid, tags=(stripe, *tuple(base)))
-        apply_stripes(tree, base_tags, iid, counter)
+# Striping/row styling moved to tablestyle.py (blocked-aware + selection
+# colours + width persistence). Kept these names only to avoid breaking any
+# stray import; new code should use netpeekier.gui.tablestyle.

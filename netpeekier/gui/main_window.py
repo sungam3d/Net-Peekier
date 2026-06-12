@@ -33,7 +33,8 @@ from ..models import ProcStat
 from ..monitor import Monitor
 from ..util import human_speed, human_bytes, ports_str, unit_suffix
 from .connections_window import ConnectionsWindow
-from .treesort import TreeSorter, configure_stripes, apply_stripes
+from .treesort import TreeSorter
+from .tablestyle import init_table, apply_stripes, restore_widths, capture_widths
 
 REFRESH_MS = 1000
 
@@ -148,9 +149,7 @@ class NetPeekierApp(tk.Tk):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        self.tree.tag_configure("blocked", foreground="#b00000")
-        self.tree.tag_configure("active", foreground="#0a7d00")
-        configure_stripes(self.tree)
+        init_table(self.tree)
 
         # raw values for click-to-sort + status tag per row, keyed by row id
         self._sortkeys: Dict[str, Dict[str, object]] = {}
@@ -164,6 +163,9 @@ class NetPeekierApp(tk.Tk):
             self.tree, self._base_headings,
             lambda iid, col: self._sortkeys.get(iid, {}).get(col),
             default_col="down", default_reverse=True)
+
+        self._main_cols = ("#0", "up", "down", "tup", "tdown", "tag", "ports")
+        restore_widths(self.tree, "main", self.monitor.settings, self._main_cols)
 
         self.tree.bind("<Double-1>", self._on_double_click)
         self.tree.bind("<Button-3>", self._on_right_click)
@@ -180,6 +182,8 @@ class NetPeekierApp(tk.Tk):
         self.ctx.add_separator()
         self.ctx.add_command(label="Set tag...",
                              command=self._tag_selected)
+        self.ctx.add_command(label="Remove tag",
+                             command=self._remove_tag_selected)
         self.ctx.add_command(label="Block (firewall)",
                              command=lambda: self._block_selected(True))
         self.ctx.add_command(label="Unblock",
@@ -508,6 +512,14 @@ class NetPeekierApp(tk.Tk):
             return
         self.monitor.set_exe_tag(proc.exe, ans.strip() or None)
 
+    def _remove_tag_selected(self) -> None:
+        proc = self._selected_proc()
+        if proc is None or not proc.exe:
+            return
+        if not self.monitor.settings.exe_tags.get(proc.exe):
+            return  # nothing to remove
+        self.monitor.set_exe_tag(proc.exe, None)
+
     def _about(self) -> None:
         messagebox.showinfo(
             "About Net-Peekier",
@@ -518,5 +530,10 @@ class NetPeekierApp(tk.Tk):
             "WinDivert (pip install pydivert) and Administrator rights.")
 
     def _on_close(self) -> None:
+        try:
+            capture_widths(self.tree, "main", self.monitor.settings,
+                           self._main_cols)
+        except Exception:
+            pass
         self.monitor.stop()
         self.destroy()
