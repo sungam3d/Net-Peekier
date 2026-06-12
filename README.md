@@ -1,5 +1,5 @@
 # Net-Peekier
-##### v1.0.11
+##### v1.0.13
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -14,9 +14,10 @@ Dashboard (up/down now + peak + total)
    └─ Application list  (svchost.exe ▸ expands to its PIDs)   [sortable headers]
         └─ double-click ▸ Connections (Detail Information)    [sortable headers]
              └─ double-click ▸ Captured Packets (+ hex dump)  [sortable headers]
-   Firewall menu ▸ Firewall & limits manager
-                 ▸ Block / Unblock / Set speed limit on selection
-   Settings ▸ speed display unit + packet-log purge interval
+   Right-click a process ▸ Block / Unblock / Set tag / Set speed limit / ...
+   Statistics ▸ traffic graphs + per-app totals
+   Settings ▸ Firewall and Tags  (the firewall/limits/tags manager)
+            ▸ Preferences        (speed unit, purge, idle-hide, LAN ranges)
 ```
 
 ## Quick start
@@ -94,9 +95,9 @@ It's on by default and its state is saved to `settings.txt`.
   nothing is being enforced); the firewall manager still shows what you've
   configured.
 
-## Firewall & limits manager
+## Firewall and Tags (manager)
 
-Open it from **Firewall ▸ Firewall & limits manager** (or right-click an app).
+Open it from **Settings ▸ Firewall and Tags** (or right-click an app).
 It lists every managed app in one table — blocked state, upload limit, download
 limit and path — independent of whether the app is currently running.
 
@@ -265,6 +266,10 @@ within each expanded program group.
 **Column widths are remembered.** Resize any column and the widths are saved to
 `settings.txt` when the window closes, so they're restored next time you open
 that window.
+
+**The main window's size and position are remembered too** — resize or move it
+and it reopens the same way next run. (If it ends up off-screen, e.g. after a
+monitor change, it falls back to a sensible default size.)
 
 ## How packets are attributed to a process
 

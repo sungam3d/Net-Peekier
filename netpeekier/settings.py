@@ -47,6 +47,8 @@ class Settings:
     tag_blocked: List[str] = field(default_factory=list)            # tags blocked
     # remembered column widths: {window_key: {column_id: width}}
     column_widths: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # remembered main-window geometry string, e.g. "880x560+100+50"
+    window_geometry: Optional[str] = None
     # hide processes idle (no internet activity) for this many minutes; None=off
     idle_hide_minutes: Optional[int] = None
     # LAN address ranges (CIDR). Remotes outside these are WAN/internet.
@@ -113,6 +115,8 @@ class Settings:
             cw = data.get("column_widths", {})
             s.column_widths = {k: {c: int(w) for c, w in v.items()}
                                for k, v in cw.items()}
+            wg = data.get("window_geometry")
+            s.window_geometry = str(wg) if wg else None
             ihm = data.get("idle_hide_minutes")
             s.idle_hide_minutes = int(ihm) if ihm not in (None, "") else None
             lr = data.get("lan_ranges")
@@ -137,6 +141,7 @@ class Settings:
                     "tag_limits": self.tag_limits,
                     "tag_blocked": self.tag_blocked,
                     "column_widths": self.column_widths,
+                    "window_geometry": self.window_geometry,
                     "idle_hide_minutes": self.idle_hide_minutes,
                     "lan_ranges": self.lan_ranges,
                     "show_lan": self.show_lan,

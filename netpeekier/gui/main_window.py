@@ -54,8 +54,8 @@ class NetPeekierApp(tk.Tk):
         super().__init__()
         self.monitor = monitor
         self.title("Net-Peekier  -  per-process network monitor")
-        self.geometry("880x560")
         self.minsize(700, 420)
+        self._apply_saved_geometry("880x560")
 
         self._child_windows: Dict[int, ConnectionsWindow] = {}
         self._known_iids: set[str] = set()
@@ -69,6 +69,33 @@ class NetPeekierApp(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(REFRESH_MS, self._refresh)
+
+    # ---- window geometry persistence --------------------------------------
+    def _apply_saved_geometry(self, default: str) -> None:
+        """Restore the last window size/position, falling back to `default`.
+        Guards against nonsense sizes and positions left off-screen (e.g. after
+        a monitor change), in which case the saved size is kept but the OS
+        places the window."""
+        geo = self.monitor.settings.window_geometry
+        if not geo:
+            self.geometry(default)
+            return
+        try:
+            size_part = geo.split("+")[0].split("-")[0]
+            w_str, h_str = size_part.lower().split("x")
+            w, h = int(w_str), int(h_str)
+            if w < 400 or h < 300 or w > 20000 or h > 20000:
+                self.geometry(default)
+                return
+            self.geometry(geo)
+            # if that put the window off-screen, keep the size, drop the position
+            self.update_idletasks()
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            x, y = self.winfo_x(), self.winfo_y()
+            if x < -50 or y < -10 or x > sw - 80 or y > sh - 80:
+                self.geometry(f"{w}x{h}")
+        except Exception:
+            self.geometry(default)
 
     # ---- filter toolbar ---------------------------------------------------
     def _build_filterbar(self) -> None:
@@ -237,7 +264,7 @@ class NetPeekierApp(tk.Tk):
         self.ctx.add_command(label="Set speed limit...",
                              command=self._limit_selected)
         self.ctx.add_separator()
-        self.ctx.add_command(label="Firewall & limits manager...",
+        self.ctx.add_command(label="Firewall and Tags...",
                              command=self._open_firewall_manager)
 
     # ---- menus ------------------------------------------------------------
@@ -247,20 +274,14 @@ class NetPeekierApp(tk.Tk):
         filem.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=filem)
 
-        fw = tk.Menu(menubar, tearoff=0)
-        fw.add_command(label="Firewall & limits manager...",
-                       command=self._open_firewall_manager)
-        fw.add_separator()
-        fw.add_command(label="Block selected app",
-                       command=lambda: self._block_selected(True))
-        fw.add_command(label="Unblock selected app",
-                       command=lambda: self._block_selected(False))
-        fw.add_command(label="Set speed limit on selected...",
-                       command=self._limit_selected)
-        menubar.add_cascade(label="Firewall", menu=fw)
-
         menubar.add_command(label="Statistics", command=self._open_stats)
-        menubar.add_command(label="Settings", command=self._open_settings)
+
+        settingsm = tk.Menu(menubar, tearoff=0)
+        settingsm.add_command(label="Firewall and Tags",
+                              command=self._open_firewall_manager)
+        settingsm.add_command(label="Preferences",
+                              command=self._open_settings)
+        menubar.add_cascade(label="Settings", menu=settingsm)
 
         helpm = tk.Menu(menubar, tearoff=0)
         helpm.add_command(label="About", command=self._about)
@@ -607,8 +628,12 @@ class NetPeekierApp(tk.Tk):
 
     def _on_close(self) -> None:
         try:
+            # remember where/how big the window was (skip if maximized so we
+            # restore to a sensible size next time, not a zoomed geometry)
+            if self.state() == "normal":
+                self.monitor.settings.window_geometry = self.geometry()
             capture_widths(self.tree, "main", self.monitor.settings,
-                           self._main_cols)
+                           self._main_cols)   # this save() persists both
         except Exception:
             pass
         self.monitor.stop()

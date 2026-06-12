@@ -211,7 +211,7 @@ class FirewallManagerWindow(tk.Toplevel):
     def __init__(self, master, monitor: Monitor) -> None:
         super().__init__(master)
         self.monitor = monitor
-        self.title("Net-Peekier - Firewall & limits manager")
+        self.title("Net-Peekier - Firewall and Tags")
         self.geometry("800x440")
 
         self._build_table()
@@ -356,7 +356,7 @@ class FirewallManagerWindow(tk.Toplevel):
             errors.append("Speed limit saved, but enforcement needs WinDivert "
                           "(pip install pydivert).")
         if errors:
-            messagebox.showwarning("Firewall & limits", "\n\n".join(errors),
+            messagebox.showwarning("Firewall and Tags", "\n\n".join(errors),
                                    parent=self)
         self._refresh()
 
@@ -386,7 +386,7 @@ class FirewallManagerWindow(tk.Toplevel):
     def _edit(self) -> None:
         exe = self._selected_exe()
         if not exe:
-            messagebox.showinfo("Firewall & limits",
+            messagebox.showinfo("Firewall and Tags",
                                 "Select an app first.", parent=self)
             return
         self._edit_exe(exe)
