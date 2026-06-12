@@ -82,9 +82,31 @@ class NetPeekierApp(tk.Tk):
         tk.Checkbutton(bar, text="Show WAN", bg="#d6dce4",
                        variable=self.var_show_wan,
                        command=self._on_filter_change).pack(side="left", padx=(8, 0))
+
+        # ---- firewall master switch (right side) ----
+        self.var_fw_enabled = tk.BooleanVar(
+            value=self.monitor.settings.firewall_enabled)
+        self.fw_light = tk.Label(bar, text="\u25cf", bg="#d6dce4",
+                                 font=("Segoe UI", 12))
+        self.fw_light.pack(side="right", padx=(2, 6))
+        tk.Checkbutton(bar, text="Enable Firewall", bg="#d6dce4",
+                       variable=self.var_fw_enabled,
+                       command=self._on_firewall_toggle).pack(side="right")
+        self._update_fw_light()
+
         tk.Label(bar, bg="#d6dce4", fg="#666",
                  text="(LAN = local-only traffic; WAN = internet. "
                       "Edit LAN ranges in Settings.)").pack(side="left", padx=12)
+
+    def _update_fw_light(self) -> None:
+        on = self.var_fw_enabled.get()
+        self.fw_light.config(fg="#1e9e3e" if on else "#cc2b2b")
+
+    def _on_firewall_toggle(self) -> None:
+        enabled = self.var_fw_enabled.get()
+        self._update_fw_light()
+        self.monitor.set_firewall_enabled(enabled)
+        self._refresh_now()
 
     def _on_filter_change(self) -> None:
         self.monitor.settings.show_lan = self.var_show_lan.get()
@@ -235,9 +257,6 @@ class NetPeekierApp(tk.Tk):
                        command=lambda: self._block_selected(False))
         fw.add_command(label="Set speed limit on selected...",
                        command=self._limit_selected)
-        fw.add_separator()
-        fw.add_command(label="Remove ALL Net-Peekier firewall rules...",
-                       command=self._remove_all_firewall_rules)
         menubar.add_cascade(label="Firewall", menu=fw)
 
         menubar.add_command(label="Statistics", command=self._open_stats)
@@ -263,19 +282,6 @@ class NetPeekierApp(tk.Tk):
             self._stats_window.lift()
             return
         self._stats_window = StatsWindow(self, self.monitor)
-
-    def _remove_all_firewall_rules(self) -> None:
-        from tkinter import messagebox
-        if not messagebox.askyesno(
-                "Remove all firewall rules",
-                "This deletes every Windows Firewall rule Net-Peekier created "
-                "(all blocks) and clears the block list.\n\n"
-                "Use this if blocking ever leaves traffic stuck. Continue?",
-                parent=self):
-            return
-        count, msg = self.monitor.remove_all_firewall_rules()
-        messagebox.showinfo("Remove all firewall rules", msg, parent=self)
-        self._refresh_now()
 
     def _refresh_now(self) -> None:
         try:
@@ -465,10 +471,13 @@ class NetPeekierApp(tk.Tk):
                 "Run as Administrator to resolve it.")
             return
         if block:
-            ok, msg = firewall.block_app(proc.exe)
+            self.monitor.set_blocked(proc.exe, True)
+            ok, msg = (True, "")
+            if self.monitor.settings.firewall_enabled:
+                ok, msg = firewall.block_app(proc.exe)
         else:
+            self.monitor.set_blocked(proc.exe, False)
             ok, msg = firewall.unblock_app(proc.exe)
-        self.monitor.set_blocked(proc.exe, block)
         if not ok:
             messagebox.showerror("Firewall", msg or "Failed (need admin?).")
         self._refresh_now()

@@ -139,13 +139,17 @@ class Monitor:
         if sync_firewall:
             try:
                 from . import firewall
-                # Only ever block concrete, valid exe paths. An empty/garbage
-                # path could otherwise become a block-everything firewall rule.
-                to_block = set(e for e in s.blocked_exes if e)
-                for tag in s.tag_blocked:
-                    to_block.update(e for e in s.exes_with_tag(tag) if e)
-                for exe in to_block:
-                    firewall.block_app(exe)   # block_app re-validates too
+                if s.firewall_enabled:
+                    # Only ever block concrete, valid exe paths. An empty/garbage
+                    # path could otherwise become a block-everything rule.
+                    to_block = set(e for e in s.blocked_exes if e)
+                    for tag in s.tag_blocked:
+                        to_block.update(e for e in s.exes_with_tag(tag) if e)
+                    for exe in to_block:
+                        firewall.block_app(exe)   # block_app re-validates too
+                else:
+                    # master switch is off: make sure none of our rules linger
+                    firewall.remove_all_rules()
             except Exception:
                 pass
         s.save()
@@ -174,9 +178,12 @@ class Monitor:
         lets the list reflect a just-applied rule immediately. This only touches
         derived fields (cheap, settings-only) so it's safe from the GUI thread."""
         s = self.settings
-        blocked_exes = set(s.blocked_exes)
-        for btag in s.tag_blocked:
-            blocked_exes.update(e for e in s.exes_with_tag(btag) if e)
+        if s.firewall_enabled:
+            blocked_exes = set(s.blocked_exes)
+            for btag in s.tag_blocked:
+                blocked_exes.update(e for e in s.exes_with_tag(btag) if e)
+        else:
+            blocked_exes = set()
         with self._lock:
             for p in self._procs:
                 exe = p.exe
@@ -262,12 +269,33 @@ class Monitor:
                 if not exe:
                     continue
                 if blocked:
-                    firewall.block_app(exe)
+                    if self.settings.firewall_enabled:
+                        firewall.block_app(exe)
                 elif exe not in self.settings.blocked_exes:
                     firewall.unblock_app(exe)
         except Exception:
             pass
         self.settings.save()
+
+    def set_firewall_enabled(self, enabled: bool) -> None:
+        """Master switch for firewall enforcement. Off removes all our block
+        rules (traffic flows) but keeps the block configuration; On re-applies
+        every configured block. Configuration is never lost either way."""
+        self.settings.firewall_enabled = bool(enabled)
+        self.settings.save()
+        try:
+            from . import firewall
+            if enabled:
+                to_block = set(e for e in self.settings.blocked_exes if e)
+                for tag in self.settings.tag_blocked:
+                    to_block.update(
+                        e for e in self.settings.exes_with_tag(tag) if e)
+                for exe in to_block:
+                    firewall.block_app(exe)
+            else:
+                firewall.remove_all_rules()   # keeps settings, drops netsh rules
+        except Exception:
+            pass
 
     def remove_all_firewall_rules(self):
         """Emergency cleanup: delete every firewall rule this app created and
@@ -378,10 +406,16 @@ class Monitor:
         self.backend.purge_packets()
 
         s = self.settings
-        blocked_exes = set(s.blocked_exes)
-        # a tag with a block marks all its members as (effectively) blocked
-        for btag in s.tag_blocked:
-            blocked_exes.update(s.exes_with_tag(btag))
+        # When the firewall master switch is off, nothing is actually enforced,
+        # so the live list shows no blocks (the config is preserved in settings
+        # and shown in the firewall manager).
+        if s.firewall_enabled:
+            blocked_exes = set(s.blocked_exes)
+            # a tag with a block marks all its members as (effectively) blocked
+            for btag in s.tag_blocked:
+                blocked_exes.update(s.exes_with_tag(btag))
+        else:
+            blocked_exes = set()
         # exes that the limiter must police (own limit, or a limited tag)
         limited_exes = self.backend.limited_exes()
         enforced_ports: set = set()

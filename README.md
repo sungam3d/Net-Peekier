@@ -1,5 +1,5 @@
 # Net-Peekier
-####### v1.0.10
+##### v1.0.11
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -75,10 +75,24 @@ touches the enforcer.
 traffic and persist after the app closes, so every block is validated first —
 Net-Peekier refuses to create a rule from anything that isn't a concrete,
 absolute path to an `.exe`. Empty or unresolved paths (which can happen for
-protected system processes) are skipped, never turned into a rule. If a block
-ever leaves you stuck, **Firewall ▸ Remove ALL Net-Peekier firewall rules**
-deletes every rule this app created (only those — it matches on our own name
-prefix) and clears the block list.
+protected system processes) are skipped, never turned into a rule. If blocking
+ever leaves you stuck, untick **Enable Firewall** (top bar): it removes every
+rule this app created (only those — it matches on our own name prefix) and lets
+traffic flow, while keeping your block configuration so you can switch it back
+on later.
+
+## Enable Firewall (master switch)
+
+Top-right of the main window, next to Show LAN / Show WAN, is an **Enable
+Firewall** checkbox with a status light — **green** when on, **red** when off.
+It's on by default and its state is saved to `settings.txt`.
+
+- **On** — your configured blocks are enforced through Windows Firewall.
+- **Off** — all Net-Peekier firewall rules are removed so traffic flows freely,
+  but your block list and tag-block rules are preserved. Turning it back on
+  re-applies them. While off, the main list shows nothing as blocked (because
+  nothing is being enforced); the firewall manager still shows what you've
+  configured.
 
 ## Firewall & limits manager
 

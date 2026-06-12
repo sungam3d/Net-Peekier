@@ -336,12 +336,14 @@ class FirewallManagerWindow(tk.Toplevel):
                     up_bps: int, down_bps: int, tag: str = "") -> None:
         """Push a desired state to firewall + monitor, reporting failures."""
         errors = []
-        # block / unblock via the OS firewall
+        # block / unblock via the OS firewall (only when the master switch is on)
         was_blocked = exe in self.monitor.list_blocked()
+        fw_on = self.monitor.settings.firewall_enabled
         if blocked and not was_blocked:
-            ok, msg = firewall.block_app(exe)
-            if not ok:
-                errors.append(f"Block failed: {msg}")
+            if fw_on:
+                ok, msg = firewall.block_app(exe)
+                if not ok:
+                    errors.append(f"Block failed: {msg}")
         elif not blocked and was_blocked:
             ok, msg = firewall.unblock_app(exe)
             if not ok:

@@ -55,6 +55,9 @@ class Settings:
     # main-list view toggles
     show_lan: bool = True
     show_wan: bool = True
+    # master switch: when off, our firewall blocks are removed (traffic flows)
+    # but the block configuration is preserved and re-applied when turned on.
+    firewall_enabled: bool = True
 
     # ---- convenience views -----------------------------------------------
     def exe_limit(self, exe: str) -> Tuple[int, int]:
@@ -117,6 +120,7 @@ class Settings:
                 s.lan_ranges = [str(x) for x in lr]
             s.show_lan = bool(data.get("show_lan", True))
             s.show_wan = bool(data.get("show_wan", True))
+            s.firewall_enabled = bool(data.get("firewall_enabled", True))
         except Exception:
             pass
         return s
@@ -137,6 +141,7 @@ class Settings:
                     "lan_ranges": self.lan_ranges,
                     "show_lan": self.show_lan,
                     "show_wan": self.show_wan,
+                    "firewall_enabled": self.firewall_enabled,
                 }, f, indent=2)
         except Exception:
             pass
