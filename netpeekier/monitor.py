@@ -69,39 +69,39 @@ class Monitor:
     def start(self) -> None:
         if self._running.is_set():
             return
-        self.apply_settings()
+        self.apply_settings(sync_firewall=True)
         self._running.set()
         self.backend.start()
         self._thread = threading.Thread(
             target=self._loop, name="np-monitor", daemon=True)
         self._thread.start()
 
-    def apply_settings(self) -> None:
-        """Push every rule from settings into the backend and the OS firewall.
-        Safe to call after any edit; it's idempotent."""
+    def apply_settings(self, sync_firewall: bool = False) -> None:
+        """Push every rule from settings into the backend in one atomic resync,
+        clearing anything stale. Idempotent and safe to call after any edit.
+
+        netsh (the OS firewall) is slow, so we only touch it when asked
+        (sync_firewall=True, used at startup). Per-edit block/unblock is done
+        directly by the caller, not here, so editing a limit or tag never
+        spawns netsh processes on the GUI thread."""
         s = self.settings
         self.backend.set_purge_minutes(s.packet_purge_minutes)
-        # per-exe limits
-        for exe in list(self.backend.limited_exes()):
-            self.backend.set_limit(exe, 0, 0)   # clear stale
-        for exe, (up, down) in list(s.exe_limits.items()):
-            self.backend.set_limit(exe, up, down)
-        # tags + tag limits
-        for exe, tag in s.exe_tags.items():
-            self.backend.set_exe_tag(exe, tag)
-        for tag, (up, down) in list(s.tag_limits.items()):
-            self.backend.set_tag_limit(tag, up, down)
-        # (re-)apply firewall blocks for exes we intend to block
-        try:
-            from . import firewall
-            for exe in list(s.blocked_exes):
-                firewall.block_app(exe)
-            # tag blocks: block every exe carrying a blocked tag
-            for tag in s.tag_blocked:
-                for exe in s.exes_with_tag(tag):
+        # One authoritative resync: the backend drops anything not in here.
+        self.backend.sync_rules(
+            exe_limits={e: tuple(v) for e, v in s.exe_limits.items()},
+            tag_limits={t: tuple(v) for t, v in s.tag_limits.items()},
+            exe_tags=dict(s.exe_tags),
+        )
+        if sync_firewall:
+            try:
+                from . import firewall
+                for exe in list(s.blocked_exes):
                     firewall.block_app(exe)
-        except Exception:
-            pass
+                for tag in s.tag_blocked:
+                    for exe in s.exes_with_tag(tag):
+                        firewall.block_app(exe)
+            except Exception:
+                pass
         s.save()
 
     def stop(self) -> None:
@@ -138,14 +138,16 @@ class Monitor:
         self.settings.save()
 
     def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None:
+        """Set an app's own limit. It is clamped to its tag's limit (if any):
+        an individual cap can be lower than the group cap but never higher."""
         if not exe:
             return
+        up_bps, down_bps = self._clamp_to_tag(exe, up_bps, down_bps)
         if up_bps <= 0 and down_bps <= 0:
             self.settings.exe_limits.pop(exe, None)
         else:
             self.settings.exe_limits[exe] = [up_bps, down_bps]
-        self.backend.set_limit(exe, up_bps, down_bps)
-        self.settings.save()
+        self.apply_settings()
 
     def set_exe_tag(self, exe: str, tag) -> None:
         if not exe:
@@ -154,8 +156,11 @@ class Monitor:
             self.settings.exe_tags[exe] = tag
         else:
             self.settings.exe_tags.pop(exe, None)
-        self.backend.set_exe_tag(exe, tag)
-        # re-apply tag rules so a freshly-tagged app picks up group limits
+        # re-clamp this app's own limit against its (possibly new) tag cap
+        if exe in self.settings.exe_limits:
+            up, down = self.settings.exe_limit(exe)
+            up, down = self._clamp_to_tag(exe, up, down)
+            self.settings.exe_limits[exe] = [up, down]
         self.apply_settings()
 
     def set_tag_limit(self, tag: str, up_bps: int, down_bps: int) -> None:
@@ -165,8 +170,13 @@ class Monitor:
             self.settings.tag_limits.pop(tag, None)
         else:
             self.settings.tag_limits[tag] = [up_bps, down_bps]
-        self.backend.set_tag_limit(tag, up_bps, down_bps)
-        self.settings.save()
+        # lowering a tag cap must pull every member's own limit down to fit
+        for exe in self.settings.exes_with_tag(tag):
+            if exe in self.settings.exe_limits:
+                u, d = self.settings.exe_limit(exe)
+                u, d = self._clamp_to_tag(exe, u, d)
+                self.settings.exe_limits[exe] = [u, d]
+        self.apply_settings()
 
     def set_tag_blocked(self, tag: str, blocked: bool) -> None:
         if not tag:
@@ -175,6 +185,7 @@ class Monitor:
             self.settings.tag_blocked.append(tag)
         elif not blocked and tag in self.settings.tag_blocked:
             self.settings.tag_blocked.remove(tag)
+        # block/unblock is the one thing that must hit netsh, done here directly
         try:
             from . import firewall
             for exe in self.settings.exes_with_tag(tag):
@@ -187,10 +198,43 @@ class Monitor:
         self.settings.save()
 
     def remove_app(self, exe: str) -> None:
-        """Fully unmanage an app: drop block, limit and tag."""
-        self.set_blocked(exe, False)
-        self.set_limit(exe, 0, 0)
-        self.set_exe_tag(exe, None)
+        """Fully unmanage an app: drop block, limit and tag, then resync once."""
+        if not exe:
+            return
+        s = self.settings
+        if exe in s.blocked_exes:
+            s.blocked_exes.remove(exe)
+            try:
+                from . import firewall
+                firewall.unblock_app(exe)
+            except Exception:
+                pass
+        s.exe_limits.pop(exe, None)
+        s.exe_tags.pop(exe, None)
+        self.apply_settings()
+
+    # ---- tag-cap helper ---------------------------------------------------
+    def _clamp_to_tag(self, exe: str, up: int, down: int) -> Tuple[int, int]:
+        """An app under a tagged limit can never exceed the tag's cap."""
+        tag = self.settings.exe_tags.get(exe)
+        if not tag:
+            return up, down
+        tup, tdown = self.settings.tag_limit(tag)
+        if tup > 0:
+            up = tup if up <= 0 else min(up, tup)
+        if tdown > 0:
+            down = tdown if down <= 0 else min(down, tdown)
+        return up, down
+
+    def effective_limit(self, exe: str) -> Tuple[int, int, bool]:
+        """The cap actually applied to an app: its own limit clamped by its
+        tag's limit. Returns (up, down, from_tag) where from_tag is True if the
+        cap comes purely from the tag (the app has no tighter own limit)."""
+        own_up, own_down = self.settings.exe_limit(exe)
+        capped_up, capped_down = self._clamp_to_tag(exe, own_up, own_down)
+        from_tag = (own_up <= 0 and own_down <= 0) and \
+                   (capped_up > 0 or capped_down > 0)
+        return capped_up, capped_down, from_tag
 
     # ---- rule queries (for the manager windows) ---------------------------
     def list_blocked(self) -> set[str]:
@@ -200,14 +244,16 @@ class Monitor:
         return {k: (v[0], v[1]) for k, v in self.settings.exe_limits.items()}
 
     def managed_apps(self) -> Dict[str, tuple]:
-        """{exe: (blocked, (up_limit, down_limit), tag)} for every managed app."""
+        """{exe: (blocked, (eff_up, eff_down), tag, from_tag)} per managed app.
+        The limit shown is the EFFECTIVE cap (own limit clamped by tag)."""
         s = self.settings
         exes = set(s.blocked_exes) | set(s.exe_limits) | set(s.exe_tags)
-        return {
-            exe: (exe in s.blocked_exes, s.exe_limit(exe),
-                  s.exe_tags.get(exe, ""))
-            for exe in exes
-        }
+        out = {}
+        for exe in exes:
+            eup, edown, from_tag = self.effective_limit(exe)
+            out[exe] = (exe in s.blocked_exes, (eup, edown),
+                        s.exe_tags.get(exe, ""), from_tag)
+        return out
 
     # ---- worker -----------------------------------------------------------
     def _loop(self) -> None:

@@ -93,15 +93,25 @@ applied.
 ## Tag groups (shared limits)
 
 Assign a **tag** to processes (right-click a process ▸ *Set tag*, or set it in
-the firewall manager) to group them. In **Tag rules...** you can block or set an
-aggregate speed limit on a whole tag. The limit is a **shared budget**: the
-combined traffic of every app under the tag can't exceed it.
+the firewall manager). The tag field is a drop-down of tags you've already used,
+and you can also type a brand-new tag.
 
-Example: tag three games as `games` and set the tag's download limit to
-2000 KB/s. One game running alone uses the full 2000 KB/s. When a second game
-launches and wants 500 KB/s, the first naturally backs off to ~1500 KB/s so the
+Open **Tag rules...** in the firewall manager to block or set an aggregate speed
+limit on a whole tag. The list shows **only tags that have a rule** — use *Add
+rule...* to pick a tag and give it a block/limit, and *Remove rule* to clear it
+(the processes keep their tag; only the group rule goes away).
+
+A tag limit is a **shared budget**: the combined traffic of every app under the
+tag can't exceed it. Example: tag three games as `games` and set the tag's
+download limit to 2000 KB/s. One game alone uses the full 2000 KB/s; when a
+second launches and wants 500 KB/s, the first backs off to ~1500 KB/s so the
 group total stays at 2000 KB/s — a single shared token bucket hands tokens to
 whichever app asks first.
+
+An app's **own limit is capped by its tag's limit**: you can give a tagged app a
+*lower* individual limit, but never a higher one. The app-rule dialog shows the
+tag's cap and clamps your entry to it, and the manager marks a limit that comes
+purely from the tag with "(tag)".
 
 ## Main-list right-click
 
@@ -183,6 +193,7 @@ netpeekier/
     connections_window.py  per-process connections ("Detail Information")
     packets_window.py      captured packets + hex dump + export-to-log
     firewall_window.py     firewall/limits manager + tag-group rules
+    tag_picker.py          tag chooser (drop-down of existing + free input)
     settings_window.py     speed unit + packet-log purge interval
     treesort.py            reusable click-to-sort + row striping
 ```

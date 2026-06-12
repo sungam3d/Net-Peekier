@@ -498,12 +498,12 @@ class NetPeekierApp(tk.Tk):
                 "Run as Administrator to resolve it.")
             return
         current = self.monitor.settings.exe_tags.get(proc.exe, "")
-        ans = simpledialog.askstring(
-            "Set tag",
+        from .tag_picker import ask_tag
+        ans = ask_tag(
+            self, "Set tag",
             f"Group tag for {proc.name}\n"
-            "(processes sharing a tag can share a block or speed limit).\n"
-            "Leave blank to remove the tag.",
-            initialvalue=current, parent=self)
+            "(processes sharing a tag can share a block or speed limit).",
+            existing=self.monitor.settings.all_tags(), current=current)
         if ans is None:
             return
         self.monitor.set_exe_tag(proc.exe, ans.strip() or None)

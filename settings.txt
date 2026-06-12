@@ -4,14 +4,11 @@
   "blocked_exes": [],
   "exe_limits": {},
   "exe_tags": {
-    "C:\\Program Files\\Royal TS V7\\RoyalTS.exe": "Server Stuff",
-    "C:\\Users\\Magnus\\AppData\\Local\\GitHubDesktop\\app-3.5.12\\GitHubDesktop.exe": "Server Stuff"
+    "C:\\Program Files\\Royal TS V7\\RoyalTS.exe": "remote desktop",
+    "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe": "remote desktop",
+    "C:\\Program Files\\LibreWolf\\librewolf.exe": "net",
+    "C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe": "net"
   },
-  "tag_limits": {
-    "Server Stuff": [
-      512000,
-      512000
-    ]
-  },
+  "tag_limits": {},
   "tag_blocked": []
 }

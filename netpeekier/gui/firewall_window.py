@@ -38,12 +38,15 @@ class RuleDialog(tk.Toplevel):
 
     def __init__(self, master, exe: str,
                  blocked: bool, up_bps: int, down_bps: int,
-                 tag: str = "") -> None:
+                 tag: str = "", existing_tags=None, tag_caps=None) -> None:
         super().__init__(master)
         self.title("App rule")
         self.resizable(False, False)
         self.transient(master)
         self.result: Optional[tuple] = None
+        self._existing_tags = sorted(set(existing_tags or []))
+        # tag_caps: {tag -> (up_bps, down_bps)} so we can show/enforce the max
+        self._tag_caps = dict(tag_caps or {})
 
         self.exe = exe
         pad = {"padx": 8, "pady": 4}
@@ -79,18 +82,46 @@ class RuleDialog(tk.Toplevel):
         tk.Label(self, text="Group tag (optional):").grid(
             row=5, column=0, sticky="w", **pad)
         self.var_tag = tk.StringVar(value=tag or "")
-        tk.Entry(self, textvariable=self.var_tag, width=14).grid(
-            row=5, column=1, sticky="w", **pad)
+        self.combo_tag = ttk.Combobox(self, textvariable=self.var_tag,
+                                      width=12, values=self._existing_tags)
+        self.combo_tag.grid(row=5, column=1, sticky="w", **pad)
+        self.var_tag.trace_add("write", lambda *_: self._update_cap_note())
+
+        # note showing the tag's cap (the individual limit can't exceed it)
+        self.cap_note = tk.Label(self, fg="#0a4d7d", justify="left",
+                                 anchor="w", wraplength=340)
+        self.cap_note.grid(row=6, column=0, columnspan=2, sticky="w", padx=8)
 
         btns = tk.Frame(self)
-        btns.grid(row=6, column=0, columnspan=2, pady=(8, 8))
+        btns.grid(row=7, column=0, columnspan=2, pady=(8, 8))
         tk.Button(btns, text="OK", width=10, command=self._ok).pack(
             side="left", padx=4)
         tk.Button(btns, text="Cancel", width=10, command=self.destroy).pack(
             side="left", padx=4)
 
+        self._update_cap_note()
         self.bind("<Return>", lambda _e: self._ok())
         self.grab_set()
+
+    def _tag_cap(self):
+        """(up_kb, down_kb) cap from the chosen tag, or (0,0) for none."""
+        tag = self.var_tag.get().strip()
+        up, down = self._tag_caps.get(tag, (0, 0))
+        return up // 1024, down // 1024
+
+    def _update_cap_note(self) -> None:
+        up_k, down_k = self._tag_cap()
+        if up_k or down_k:
+            parts = []
+            if up_k:
+                parts.append(f"up {up_k} KB/s")
+            if down_k:
+                parts.append(f"down {down_k} KB/s")
+            self.cap_note.config(
+                text=f"Tag '{self.var_tag.get().strip()}' caps this app at "
+                     f"{', '.join(parts)} (your limit is clamped to it).")
+        else:
+            self.cap_note.config(text="")
 
     def _ok(self) -> None:
         try:
@@ -102,6 +133,12 @@ class RuleDialog(tk.Toplevel):
             messagebox.showerror("App rule", "Limits must be whole numbers >= 0.",
                                  parent=self)
             return
+        # clamp the individual limit to the tag cap (KB/s) before saving
+        cap_up, cap_down = self._tag_cap()
+        if cap_up:
+            up = cap_up if up <= 0 else min(up, cap_up)
+        if cap_down:
+            down = cap_down if down <= 0 else min(down, cap_down)
         self.result = (self.var_block.get(), up * 1024, down * 1024,
                        self.var_tag.get().strip())
         self.destroy()
@@ -234,13 +271,17 @@ class FirewallManagerWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         sortkeys: dict = {}
         rowtags: dict = {}
-        for exe, (blocked, (up, down), tag) in \
+        for exe, (blocked, (up, down), tag, from_tag) in \
                 self.monitor.managed_apps().items():
             iid = exe
+            # mark a limit that is inherited purely from the tag cap
+            suffix = "  (tag)" if from_tag else ""
+            up_txt = _fmt_limit(up) + (suffix if up else "")
+            down_txt = _fmt_limit(down) + (suffix if down else "")
             self.tree.insert(
                 "", "end", iid=iid, text=os.path.basename(exe) or exe,
                 values=("Yes" if blocked else "No",
-                        _fmt_limit(up), _fmt_limit(down), tag, exe))
+                        up_txt, down_txt, tag, exe))
             rowtags[iid] = ("blocked",) if blocked else ()
             sortkeys[iid] = {
                 "#0": (os.path.basename(exe) or exe).lower(),
@@ -274,10 +315,9 @@ class FirewallManagerWindow(tk.Toplevel):
             if not ok:
                 errors.append(f"Unblock failed: {msg}")
         self.monitor.set_blocked(exe, blocked)
-        # limits via the enforcer
-        self.monitor.set_limit(exe, up_bps, down_bps)
-        # group tag
+        # Set the tag FIRST so the limit is clamped against the right tag cap.
         self.monitor.set_exe_tag(exe, tag or None)
+        self.monitor.set_limit(exe, up_bps, down_bps)
         if (up_bps or down_bps) and not self.monitor.has_per_process_speed:
             errors.append("Speed limit saved, but enforcement needs WinDivert "
                           "(pip install pydivert).")
@@ -286,10 +326,19 @@ class FirewallManagerWindow(tk.Toplevel):
                                    parent=self)
         self._refresh()
 
+    def _tag_caps(self) -> dict:
+        """{tag -> (up_bps, down_bps)} for tags that have a limit."""
+        return {t: self.monitor.settings.tag_limit(t)
+                for t in self.monitor.settings.tag_limits}
+
     def _edit_exe(self, exe: str) -> None:
-        managed = self.monitor.managed_apps().get(exe, (False, (0, 0), ""))
-        blocked, (up, down), tag = managed
-        dlg = RuleDialog(self, exe, blocked, up, down, tag)
+        managed = self.monitor.managed_apps().get(exe, (False, (0, 0), "", False))
+        blocked, (up, down), tag, _from_tag = managed
+        # show the app's OWN limit in the dialog, not the tag-inherited one
+        own_up, own_down = self.monitor.settings.exe_limit(exe)
+        dlg = RuleDialog(self, exe, blocked, own_up, own_down, tag,
+                         existing_tags=self.monitor.settings.all_tags(),
+                         tag_caps=self._tag_caps())
         self.wait_window(dlg)
         if dlg.result is None:
             return
@@ -373,10 +422,15 @@ class TagRulesWindow(tk.Toplevel):
         bar = tk.Frame(self)
         bar.pack(side="bottom", fill="x", padx=6, pady=(0, 8))
         tk.Label(bar, fg="#666",
-                 text="Tip: tag processes from the main list "
-                      "(right-click > Set tag).").pack(side="left", padx=4)
+                 text="Only tags with a rule are listed. Tag processes from the "
+                      "main list (right-click > Set tag).",
+                 wraplength=300, justify="left").pack(side="left", padx=4)
+        tk.Button(bar, text="Add rule...", command=self._add_rule).pack(
+            side="left", padx=2)
         tk.Button(bar, text="Edit...", command=self._edit).pack(
-            side="right", padx=2)
+            side="left", padx=2)
+        tk.Button(bar, text="Remove rule", command=self._remove_rule).pack(
+            side="left", padx=2)
         tk.Button(bar, text="Close", command=self.destroy).pack(
             side="right", padx=2)
 
@@ -390,7 +444,9 @@ class TagRulesWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         s = self.monitor.settings
         rowtags = {}
-        for tag in s.tags():
+        # Only tags that actually HAVE a rule (a limit or a block) are shown.
+        ruled = sorted(set(s.tag_limits) | set(s.tag_blocked))
+        for tag in ruled:
             up, down = s.tag_limit(tag)
             blocked = tag in s.tag_blocked
             members = len(s.exes_with_tag(tag))
@@ -403,14 +459,34 @@ class TagRulesWindow(tk.Toplevel):
         if keep and self.tree.exists(keep):
             self.tree.selection_set(keep)
 
+    def _add_rule(self) -> None:
+        from .tag_picker import ask_tag
+        s = self.monitor.settings
+        # tags you can add a rule for = assigned tags that don't have one yet
+        candidates = [t for t in s.all_tags()
+                      if t not in s.tag_limits and t not in s.tag_blocked]
+        if not candidates and not s.exe_tags:
+            messagebox.showinfo(
+                "Add tag rule",
+                "No tags yet. Assign a tag to some processes first\n"
+                "(main list > right-click > Set tag).", parent=self)
+            return
+        tag = ask_tag(self, "Add tag rule",
+                      "Choose a tag to add a block or speed limit for.",
+                      existing=candidates or s.all_tags())
+        if not tag:
+            return
+        self._edit_tag(tag)
+
     def _edit(self) -> None:
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Tag rules", "Select a tag first.\n\n"
-                                "Tags appear here once you assign them to "
-                                "processes from the main list.", parent=self)
+            messagebox.showinfo("Tag rules", "Select a tag rule to edit, or "
+                                "use 'Add rule...'.", parent=self)
             return
-        tag = sel[0]
+        self._edit_tag(sel[0])
+
+    def _edit_tag(self, tag: str) -> None:
         s = self.monitor.settings
         up, down = s.tag_limit(tag)
         blocked = tag in s.tag_blocked
@@ -421,6 +497,21 @@ class TagRulesWindow(tk.Toplevel):
         new_blocked, new_up, new_down = dlg.result
         self.monitor.set_tag_limit(tag, new_up, new_down)
         self.monitor.set_tag_blocked(tag, new_blocked)
+        self._refresh()
+
+    def _remove_rule(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        tag = sel[0]
+        if not messagebox.askyesno(
+                "Remove tag rule",
+                f"Remove the block/limit rule for tag '{tag}'?\n\n"
+                "(Processes keep the tag; only the group rule is removed.)",
+                parent=self):
+            return
+        self.monitor.set_tag_limit(tag, 0, 0)
+        self.monitor.set_tag_blocked(tag, False)
         self._refresh()
 
 

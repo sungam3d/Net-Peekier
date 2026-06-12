@@ -117,6 +117,11 @@ class CaptureBackend:
     def set_exe_tag(self, exe: str, tag) -> None: ...
     def set_enforced_ports(self, ports) -> None: ...
 
+    def sync_rules(self, exe_limits, tag_limits, exe_tags) -> None:
+        """Atomically replace ALL limit/tag rules with the given snapshot,
+        dropping anything stale. This is the authoritative path."""
+        ...
+
     def limited_exes(self) -> set:
         return set()
 
@@ -328,6 +333,35 @@ class WinDivertBackend(CaptureBackend):
                 self._exe_tag[exe] = tag
             else:
                 self._exe_tag.pop(exe, None)
+
+    def sync_rules(self, exe_limits, tag_limits, exe_tags) -> None:
+        """Atomically rebuild every rule from an authoritative snapshot. Any
+        bucket/tag/mapping not present here is dropped -- this is what prevents
+        stale rules (e.g. a tag whose apps were removed) from lingering and
+        keeping the enforcer alive or mis-attributing packets."""
+        with self._rules_lock:
+            self._buckets = {
+                exe: (TokenBucket(u if u > 0 else 10**12),
+                      TokenBucket(d if d > 0 else 10**12))
+                for exe, (u, d) in exe_limits.items() if (u > 0 or d > 0)
+            }
+            self._tag_buckets = {
+                tag: (TokenBucket(u if u > 0 else 10**12),
+                      TokenBucket(d if d > 0 else 10**12))
+                for tag, (u, d) in tag_limits.items() if (u > 0 or d > 0)
+            }
+            self._exe_tag = {e: t for e, t in exe_tags.items() if t}
+        # If that cleared the last rule, wake the enforcer so it releases its
+        # divert handle now instead of waiting for the next packet -- otherwise
+        # a handle could linger with no rules behind it.
+        if not self._has_rules():
+            handle = self._enforce_handle
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+        self._sync_enforcer()
 
     def set_enforced_ports(self, ports: set) -> None:
         """Local ports of all limited apps. The divert filter is rebuilt from
