@@ -1,0 +1,8 @@
+# Required
+psutil>=5.9
+
+# Optional but strongly recommended (Windows only): enables real per-process
+# upload/download speeds, the live packet + hex view, blocking and throttling.
+# Needs the WinDivert driver, which pydivert bundles. Install with:
+#     pip install pydivert
+pydivert>=2.1 ; platform_system == "Windows"
