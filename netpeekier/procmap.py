@@ -70,6 +70,11 @@ class ProcessMap:
             return pid
         return self._loose.get((proto, local_port))
 
+    def pid_for_port(self, proto: str, local_port: int) -> Optional[int]:
+        """Owner of a local (proto, port) ignoring IP. Used by the throttle's
+        hot path, which only knows the port and wants to stay cheap."""
+        return self._loose.get((proto, local_port))
+
     # ---- refresh ----------------------------------------------------------
     def refresh(self, force: bool = False, min_interval: float = 0.9) -> None:
         now = time.time()

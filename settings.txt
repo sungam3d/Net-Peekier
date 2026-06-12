@@ -1,14 +1,26 @@
 {
   "speed_unit": "KB/s",
   "packet_purge_minutes": 1,
-  "blocked_exes": [],
+  "blocked_exes": [
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.UserSessionHelper.exe",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\dll\\ArmourySocketServer\\ArmourySocketServer.exe",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\asus_framework.exe"
+  ],
   "exe_limits": {},
   "exe_tags": {
     "C:\\Program Files\\Royal TS V7\\RoyalTS.exe": "remote desktop",
     "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe": "remote desktop",
-    "C:\\Program Files\\LibreWolf\\librewolf.exe": "net",
-    "C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe": "net"
+    "C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe": "net",
+    "C:\\Users\\Magnus\\AppData\\Local\\GitHubDesktop\\app-3.5.12\\GitHubDesktop.exe": "net",
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.Service.exe": "Blocked",
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.UserSessionHelper.exe": "Blocked",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\dll\\ArmourySocketServer\\ArmourySocketServer.exe": "Blocked",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\asus_framework.exe": "Blocked",
+    "C:\\Program Files (x86)\\Acronis\\TrueImageHome\\Agent\\aakore.exe": "Blocked",
+    "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": "Blocked"
   },
   "tag_limits": {},
-  "tag_blocked": []
+  "tag_blocked": [
+    "Blocked"
+  ]
 }

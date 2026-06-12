@@ -171,10 +171,19 @@ class WinDivertBackend(CaptureBackend):
         self._buckets: Dict[str, Tuple[TokenBucket, TokenBucket]] = {}  # exe
         self._tag_buckets: Dict[str, Tuple[TokenBucket, TokenBucket]] = {}  # tag
         self._exe_tag: Dict[str, str] = {}        # exe -> tag
+        # Lock-free snapshot the enforcer reads on the per-packet hot path, so a
+        # packet storm never contends on _rules_lock with the GUI/monitor (which
+        # would make rule edits hang). Rebound atomically whenever rules change.
+        self._snapshot: Tuple[dict, dict, dict] = ({}, {}, {})
         # Local ports of all limited apps; the divert filter is built from this
         # so the enforcer only ever sees the targeted apps' packets.
         self._enforced_ports: set[int] = set()
         self._enforce_handle = None               # live divert handle (to close)
+
+    def _rebuild_snapshot(self) -> None:
+        """Refresh the lock-free snapshot. Call with _rules_lock held."""
+        self._snapshot = (dict(self._buckets), dict(self._tag_buckets),
+                          dict(self._exe_tag))
 
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> None:
@@ -311,6 +320,7 @@ class WinDivertBackend(CaptureBackend):
                     TokenBucket(up_bps if up_bps > 0 else 10**12),
                     TokenBucket(down_bps if down_bps > 0 else 10**12),
                 )
+            self._rebuild_snapshot()
         self._sync_enforcer()
 
     def set_tag_limit(self, tag: str, up_bps: int, down_bps: int) -> None:
@@ -325,6 +335,7 @@ class WinDivertBackend(CaptureBackend):
                     TokenBucket(up_bps if up_bps > 0 else 10**12),
                     TokenBucket(down_bps if down_bps > 0 else 10**12),
                 )
+            self._rebuild_snapshot()
         self._sync_enforcer()
 
     def set_exe_tag(self, exe: str, tag: Optional[str]) -> None:
@@ -333,6 +344,7 @@ class WinDivertBackend(CaptureBackend):
                 self._exe_tag[exe] = tag
             else:
                 self._exe_tag.pop(exe, None)
+            self._rebuild_snapshot()
 
     def sync_rules(self, exe_limits, tag_limits, exe_tags) -> None:
         """Atomically rebuild every rule from an authoritative snapshot. Any
@@ -351,6 +363,7 @@ class WinDivertBackend(CaptureBackend):
                 for tag, (u, d) in tag_limits.items() if (u > 0 or d > 0)
             }
             self._exe_tag = {e: t for e, t in exe_tags.items() if t}
+            self._rebuild_snapshot()
         # If that cleared the last rule, wake the enforcer so it releases its
         # divert handle now instead of waiting for the next packet -- otherwise
         # a handle could linger with no rules behind it.
@@ -421,6 +434,8 @@ class WinDivertBackend(CaptureBackend):
         # apps you chose to limit -- never the rest of the system.
         current_filter = None
         handle = None
+        processed = 0
+        dropped = 0
         while self._running.is_set() and self._has_rules():
             want = self._build_filter()
             if want != current_filter:
@@ -439,6 +454,14 @@ class WinDivertBackend(CaptureBackend):
                 try:
                     handle = pydivert.WinDivert(want)
                     handle.open()
+                    # Keep the driver's queue shallow so that when an app blasts
+                    # above its limit, excess packets are dropped quickly by the
+                    # driver (the throttle) instead of buffering up latency.
+                    try:
+                        handle.queue_len = 2048
+                        handle.queue_time = 256   # ms
+                    except Exception:
+                        pass
                     with self._rules_lock:
                         self._enforce_handle = handle
                 except Exception as exc:
@@ -465,6 +488,19 @@ class WinDivertBackend(CaptureBackend):
                     handle.send(packet)
                 except Exception:
                     pass
+            # Yield the GIL periodically so a high-rate flow (e.g. throttling a
+            # game blasting UDP) can never starve the Tkinter GUI thread. When
+            # we're dropping (a storm above budget) we yield more eagerly; the
+            # over-budget packets we don't pull fast enough overflow the driver
+            # queue and get dropped there -- which is the throttle doing its job
+            # while keeping the UI responsive.
+            processed += 1
+            if drop:
+                dropped += 1
+                if (dropped & 0x3F) == 0:          # every 64 drops
+                    time.sleep(0.001)
+            elif (processed & 0xFF) == 0:           # every 256 forwarded
+                time.sleep(0)                       # bare GIL yield
         # cleanup
         if handle is not None:
             try:
@@ -475,31 +511,32 @@ class WinDivertBackend(CaptureBackend):
                 self._enforce_handle = None
 
     def _allow_packet(self, packet) -> bool:
-        proto, lip, lport, rip, rport, length = _decode(packet)
-        if proto is None:
+        # Cheapest possible early-out: read the snapshot once (atomic rebind).
+        exe_b, tag_b, exe_tag = self._snapshot
+        if not exe_b and not tag_b:
             return True
-        pid = self.procmap.pid_for_endpoint(proto, lip, lport)
+        proto, lport, length = _decode_fast(packet)
+        if proto is None or not lport:
+            return True
+        pid = self.procmap.pid_for_port(proto, lport)
         if pid is None:
             return True
         exe = self.procmap.exe(pid)
         if not exe:
             return True
-        with self._rules_lock:
-            exe_buckets = self._buckets.get(exe)
-            tag = self._exe_tag.get(exe)
-            tag_buckets = self._tag_buckets.get(tag) if tag else None
+        exe_buckets = exe_b.get(exe)
+        tag = exe_tag.get(exe)
+        tag_buckets = tag_b.get(tag) if tag else None
+        if exe_buckets is None and tag_buckets is None:
+            return True
         outbound = packet.is_outbound
         # Must satisfy BOTH its own limit and any shared tag limit. The shared
-        # tag bucket is what makes several tagged apps compete for one budget:
-        # whichever asks first gets the tokens, so a second app launching makes
-        # the first naturally slow to stay under the group total. We check all
-        # relevant buckets first and only consume if every one can afford it.
+        # tag bucket is what makes several tagged apps compete for one budget.
+        # Check all relevant buckets first and only consume if every one fits.
         relevant = []
         for buckets in (exe_buckets, tag_buckets):
             if buckets is not None:
                 relevant.append(buckets[0] if outbound else buckets[1])
-        if not relevant:
-            return True
         if all(b.can(length) for b in relevant):
             for b in relevant:
                 b.take(length)
@@ -520,7 +557,8 @@ class WinDivertBackend(CaptureBackend):
 def _decode(packet):
     """Pull (proto, local_ip, local_port, remote_ip, remote_port, length) out
     of a pydivert packet, oriented so local/remote are consistent regardless of
-    direction. Returns proto=None for packets we don't track."""
+    direction. Returns proto=None for packets we don't track. Used for the
+    packet-capture view where full addresses matter."""
     length = len(packet.raw)
     if packet.tcp is not None:
         proto = "TCP"
@@ -538,6 +576,27 @@ def _decode(packet):
         return proto, src_ip, src_port, dst_ip, dst_port, length
     else:
         return proto, dst_ip, dst_port, src_ip, src_port, length
+
+
+def _decode_fast(packet):
+    """Minimal decode for the enforcer hot path: only the protocol, the LOCAL
+    port and the length -- enough to attribute the packet to a process. Skips
+    the (relatively costly) src/dst IP string parsing that the throttle never
+    needs, so a high-rate flow stays cheap to process.
+
+    Returns (proto, local_port, length) or (None, 0, length)."""
+    length = len(packet.raw)
+    tcp = packet.tcp
+    if tcp is not None:
+        proto = "TCP"
+    elif packet.udp is not None:
+        proto = "UDP"
+    else:
+        return None, 0, length
+    # local port = src port when outbound, dst port when inbound
+    if packet.is_outbound:
+        return proto, (packet.src_port or 0), length
+    return proto, (packet.dst_port or 0), length
 
 
 def make_backend(procmap: ProcessMap) -> CaptureBackend:
