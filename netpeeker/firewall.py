@@ -86,6 +86,28 @@ def is_blocked(exe_path: str) -> bool:
     return rc == 0 and "block" in out.lower()
 
 
+def list_blocked() -> list[str]:
+    """Return the exe paths of every app we've blocked via the firewall.
+
+    We embed the exe path in our rule names ('<prefix> block out :: <exe>'),
+    so we can recover the list locale-independently by scanning rule names
+    rather than parsing localized 'Program:' fields.
+    """
+    rc, out = _run([
+        "netsh", "advfirewall", "firewall", "show", "rule", "name=all",
+    ])
+    if rc != 0:
+        return []
+    marker = f"{RULE_PREFIX} block "
+    exes: set[str] = set()
+    for line in out.splitlines():
+        if marker in line and "::" in line:
+            exe = line.split("::", 1)[1].strip()
+            if exe:
+                exes.add(exe)
+    return sorted(exes)
+
+
 def clear_all() -> None:
     """Remove every rule this app ever created (housekeeping)."""
     _run([

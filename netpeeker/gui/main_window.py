@@ -153,6 +153,9 @@ class NetPeekierApp(tk.Tk):
                              command=lambda: self._block_selected(False))
         self.ctx.add_command(label="Set speed limit...",
                              command=self._limit_selected)
+        self.ctx.add_separator()
+        self.ctx.add_command(label="Firewall & limits manager...",
+                             command=self._open_firewall_manager)
 
     # ---- menus ------------------------------------------------------------
     def _build_menu(self) -> None:
@@ -162,6 +165,9 @@ class NetPeekierApp(tk.Tk):
         menubar.add_cascade(label="File", menu=filem)
 
         fw = tk.Menu(menubar, tearoff=0)
+        fw.add_command(label="Firewall && limits manager...",
+                       command=self._open_firewall_manager)
+        fw.add_separator()
         fw.add_command(label="Block selected app",
                        command=lambda: self._block_selected(True))
         fw.add_command(label="Unblock selected app",
@@ -320,13 +326,19 @@ class NetPeekierApp(tk.Tk):
             ok, msg = firewall.block_app(proc.exe)
         else:
             ok, msg = firewall.unblock_app(proc.exe)
-        self.monitor.set_blocked(proc.pid, block)
+        self.monitor.set_blocked(proc.exe, block)
         if not ok:
             messagebox.showerror("Firewall", msg or "Failed (need admin?).")
 
     def _limit_selected(self) -> None:
         proc = self._selected_proc()
         if proc is None:
+            return
+        if not proc.exe:
+            messagebox.showwarning(
+                "Speed limit",
+                "No executable path available for this process.\n"
+                "Run as Administrator to resolve it.")
             return
         ans = simpledialog.askstring(
             "Speed limit",
@@ -341,11 +353,18 @@ class NetPeekierApp(tk.Tk):
         except ValueError:
             messagebox.showerror("Speed limit", "Use the form '50,200'.")
             return
-        self.monitor.set_limit(proc.pid, up_k * 1024, down_k * 1024)
+        self.monitor.set_limit(proc.exe, up_k * 1024, down_k * 1024)
         if not self.monitor.has_per_process_speed:
             messagebox.showinfo(
                 "Speed limit",
                 "Limit recorded, but enforcement needs WinDivert installed.")
+
+    def _open_firewall_manager(self) -> None:
+        from .firewall_window import FirewallManagerWindow
+        if getattr(self, "_fw_window", None) and self._fw_window.winfo_exists():
+            self._fw_window.lift()
+            return
+        self._fw_window = FirewallManagerWindow(self, self.monitor)
 
     def _about(self) -> None:
         messagebox.showinfo(

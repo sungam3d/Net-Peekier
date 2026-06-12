@@ -31,11 +31,19 @@ class Monitor:
         self._lock = threading.Lock()
         self._procs: List[ProcStat] = []
         self._totals = Totals()
-        # remember rules so they persist across snapshots
-        self._blocked: set[int] = set()
-        self._limits: Dict[int, Tuple[int, int]] = {}
+        # Rules are keyed by executable PATH, not PID, so they survive process
+        # restarts and can be managed even when the app isn't running.
+        self._blocked_exes: set[str] = set()
+        self._limits_by_exe: Dict[str, Tuple[int, int]] = {}
         # last per-connection rates, so detail windows can show them
         self._conn_rates: Dict[ConnKey, Tuple[float, float]] = {}
+
+        # Seed the blocked set from any firewall rules we created previously.
+        try:
+            from . import firewall
+            self._blocked_exes.update(firewall.list_blocked())
+        except Exception:
+            pass
 
         self._running = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -84,22 +92,50 @@ class Monitor:
     def packets_for(self, conn_key: ConnKey):
         return self.backend.recent_packets(conn_key)
 
-    # ---- control passthrough ---------------------------------------------
-    def set_blocked(self, pid: int, blocked: bool) -> None:
+    # ---- control passthrough (all keyed by executable path) ---------------
+    def set_blocked(self, exe: str, blocked: bool) -> None:
+        if not exe:
+            return
         with self._lock:
             if blocked:
-                self._blocked.add(pid)
+                self._blocked_exes.add(exe)
             else:
-                self._blocked.discard(pid)
-        self.backend.set_blocked(pid, blocked)
+                self._blocked_exes.discard(exe)
+        self.backend.set_blocked(exe, blocked)
 
-    def set_limit(self, pid: int, up_bps: int, down_bps: int) -> None:
+    def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None:
+        if not exe:
+            return
         with self._lock:
             if up_bps <= 0 and down_bps <= 0:
-                self._limits.pop(pid, None)
+                self._limits_by_exe.pop(exe, None)
             else:
-                self._limits[pid] = (up_bps, down_bps)
-        self.backend.set_limit(pid, up_bps, down_bps)
+                self._limits_by_exe[exe] = (up_bps, down_bps)
+        self.backend.set_limit(exe, up_bps, down_bps)
+
+    def remove_app(self, exe: str) -> None:
+        """Fully unmanage an app: drop its block and its limit."""
+        self.set_blocked(exe, False)
+        self.set_limit(exe, 0, 0)
+
+    # ---- rule queries (for the firewall manager window) -------------------
+    def list_blocked(self) -> set[str]:
+        with self._lock:
+            return set(self._blocked_exes)
+
+    def list_limits(self) -> Dict[str, Tuple[int, int]]:
+        with self._lock:
+            return dict(self._limits_by_exe)
+
+    def managed_apps(self) -> Dict[str, Tuple[bool, Tuple[int, int]]]:
+        """{exe: (blocked, (up_limit, down_limit))} for every managed app."""
+        with self._lock:
+            exes = set(self._blocked_exes) | set(self._limits_by_exe)
+            return {
+                exe: (exe in self._blocked_exes,
+                      self._limits_by_exe.get(exe, (0, 0)))
+                for exe in exes
+            }
 
     # ---- worker -----------------------------------------------------------
     def _loop(self) -> None:
@@ -138,17 +174,19 @@ class Monitor:
                 if cr:
                     c.up_bps, c.down_bps = cr
 
+            exe = self.procmap.exe(pid)
+            limit = self._limits_by_exe.get(exe, (0, 0)) if exe else (0, 0)
             ps = ProcStat(
                 pid=pid,
                 name=self.procmap.name(pid),
-                exe=self.procmap.exe(pid),
+                exe=exe,
                 up_bps=up,
                 down_bps=down,
                 listening_ports=self.procmap.listening_ports(conns),
                 connections=conns,
-                blocked=pid in self._blocked,
-                up_limit=self._limits.get(pid, (0, 0))[0],
-                down_limit=self._limits.get(pid, (0, 0))[1],
+                blocked=bool(exe) and exe in self._blocked_exes,
+                up_limit=limit[0],
+                down_limit=limit[1],
             )
             procs.append(ps)
 

@@ -13,7 +13,8 @@ Dashboard (up/down now + peak)
    └─ Application list  (svchost.exe ▸ expands to its PIDs)
         └─ double-click ▸ Connections (Detail Information)
              └─ double-click ▸ Captured Packets (+ hex dump)
-   Firewall menu ▸ Block / Unblock / Set speed limit
+   Firewall menu ▸ Firewall & limits manager
+                 ▸ Block / Unblock / Set speed limit on selection
 ```
 
 ## Quick start
@@ -57,6 +58,25 @@ way:
 App **blocking** defaults to **Windows Firewall** (`netsh advfirewall`), so the
 block is persistent and never sits in your packet path.
 
+## Firewall & limits manager
+
+Open it from **Firewall ▸ Firewall & limits manager** (or right-click an app).
+It lists every managed app in one table — blocked state, upload limit, download
+limit and path — independent of whether the app is currently running.
+
+- **Add running app...** — pick from processes that currently have network
+  activity (only ones with a resolvable executable path can be managed).
+- **Add by path...** — browse to any `.exe`.
+- **Edit...** (or double-click a row) — a small dialog with a *Block* checkbox
+  and *Upload/Download limit* fields in KB/s (0 = unlimited).
+- **Remove** — clears both the block and the limit for that app.
+
+Rules are keyed by **executable path**, so they stick to the app across
+restarts rather than to a one-off PID. Blocks are applied through Windows
+Firewall (persistent); limits are enforced by the WinDivert throttler while
+active. Both need Administrator — the window tells you if a rule couldn't be
+applied.
+
 ## How packets are attributed to a process
 
 The capture backend reads each packet's local `(ip, port)` and looks up the
@@ -79,6 +99,7 @@ netpeeker/
     main_window.py         dashboard + application treeview + firewall menu
     connections_window.py  per-process connections ("Detail Information")
     packets_window.py      captured packets + hex/ASCII dump + export
+    firewall_window.py     firewall & rate-limit manager (add/edit/remove)
 ```
 
 ## Limitations & honest notes

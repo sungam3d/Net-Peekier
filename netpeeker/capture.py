@@ -84,9 +84,9 @@ class CaptureBackend:
     def recent_packets(self, conn_key: ConnKey):
         return []
 
-    # traffic control -------------------------------------------------------
-    def set_limit(self, pid: int, up_bps: int, down_bps: int) -> None: ...
-    def set_blocked(self, pid: int, blocked: bool) -> None: ...
+    # traffic control (keyed by executable path) ---------------------------
+    def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None: ...
+    def set_blocked(self, exe: str, blocked: bool) -> None: ...
 
 
 class NullBackend(CaptureBackend):
@@ -120,11 +120,11 @@ class WinDivertBackend(CaptureBackend):
         self._enforce_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
 
-        # rules: shared with the enforcer thread
+        # rules: shared with the enforcer thread. Keyed by executable path so
+        # they follow an app across restarts (matching monitor/firewall).
         self._rules_lock = threading.Lock()
-        self._blocked: set[int] = set()
-        self._limits: Dict[int, Tuple[int, int]] = {}        # pid -> (up,down)
-        self._buckets: Dict[int, Tuple[TokenBucket, TokenBucket]] = {}
+        self._blocked: set[str] = set()
+        self._buckets: Dict[str, Tuple[TokenBucket, TokenBucket]] = {}
 
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> None:
@@ -212,30 +212,32 @@ class WinDivertBackend(CaptureBackend):
             return list(self._packets.get(conn_key, ()))
 
     # ---- traffic control (enforcer) --------------------------------------
-    def set_limit(self, pid: int, up_bps: int, down_bps: int) -> None:
+    def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None:
+        if not exe:
+            return
         with self._rules_lock:
             if up_bps <= 0 and down_bps <= 0:
-                self._limits.pop(pid, None)
-                self._buckets.pop(pid, None)
+                self._buckets.pop(exe, None)
             else:
-                self._limits[pid] = (up_bps, down_bps)
-                self._buckets[pid] = (
+                self._buckets[exe] = (
                     TokenBucket(up_bps if up_bps > 0 else 10**12),
                     TokenBucket(down_bps if down_bps > 0 else 10**12),
                 )
         self._sync_enforcer()
 
-    def set_blocked(self, pid: int, blocked: bool) -> None:
+    def set_blocked(self, exe: str, blocked: bool) -> None:
+        if not exe:
+            return
         with self._rules_lock:
             if blocked:
-                self._blocked.add(pid)
+                self._blocked.add(exe)
             else:
-                self._blocked.discard(pid)
+                self._blocked.discard(exe)
         self._sync_enforcer()
 
     def _has_rules(self) -> bool:
         with self._rules_lock:
-            return bool(self._blocked or self._limits)
+            return bool(self._blocked or self._buckets)
 
     def _sync_enforcer(self) -> None:
         """Start the enforcer thread on first rule; it self-exits when idle."""
@@ -274,10 +276,13 @@ class WinDivertBackend(CaptureBackend):
         pid = self.procmap.pid_for_endpoint(proto, lip, lport)
         if pid is None:
             return True
+        exe = self.procmap.exe(pid)
+        if not exe:
+            return True
         with self._rules_lock:
-            if pid in self._blocked:
+            if exe in self._blocked:
                 return False
-            buckets = self._buckets.get(pid)
+            buckets = self._buckets.get(exe)
         if buckets is None:
             return True
         up_b, down_b = buckets
