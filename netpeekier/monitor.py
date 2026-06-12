@@ -22,6 +22,33 @@ from .procmap import ProcessMap
 ConnKey = Tuple[str, str, int, str, int]
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        return psutil.pid_exists(pid)
+    except Exception:
+        return True   # if unsure, keep it rather than wrongly dropping
+
+
+def _is_wan(ip_str: str, nets) -> bool:
+    """True if a remote IP is a routable internet (WAN) address, i.e. not in
+    any configured LAN range and not otherwise private/local."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except Exception:
+        return False
+    for n in nets:
+        try:
+            if ip in n:
+                return False
+        except Exception:
+            continue
+    if (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_multicast or ip.is_unspecified or ip.is_reserved):
+        return False
+    return True
+
+
 class Monitor:
     def __init__(self, interval: float = 1.0) -> None:
         self.interval = interval
@@ -50,6 +77,11 @@ class Monitor:
         self._running = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_tick = time.monotonic()
+
+        # activity tracking for idle-hiding and terminated-process cleanup
+        self._last_active: Dict[int, float] = {}    # pid -> monotonic ts
+        self._prev_conns: Dict[int, frozenset] = {}  # pid -> conn-key set
+        self._lan_nets = self.settings.lan_networks()  # cached parsed ranges
 
         # system-wide fallback counters (used when backend has no per-PID data)
         self._last_io = psutil.net_io_counters()
@@ -85,6 +117,7 @@ class Monitor:
         directly by the caller, not here, so editing a limit or tag never
         spawns netsh processes on the GUI thread."""
         s = self.settings
+        self._lan_nets = s.lan_networks()
         self.backend.set_purge_minutes(s.packet_purge_minutes)
         # One authoritative resync: the backend drops anything not in here.
         self.backend.sync_rules(
@@ -305,8 +338,22 @@ class Monitor:
         up_total = down_total = 0.0
 
         # Union of pids that have connections, current traffic, or any history.
-        pids = set(conns_by_pid) | set(pid_rates) | set(pid_totals)
+        live_pids = set(conns_by_pid) | set(pid_rates)
+        pids = live_pids | set(pid_totals)
+        now_wall = time.time()
+        idle_secs = (s.idle_hide_minutes * 60) if s.idle_hide_minutes else None
+        nets = self._lan_nets
+        dead_pids: set = set()
+        seen_pids: set = set()
+
         for pid in pids:
+            # --- terminated-process cleanup: a history-only pid that no longer
+            # exists is gone; drop it and forget its counters.
+            if pid not in live_pids and not _pid_alive(pid):
+                dead_pids.add(pid)
+                continue
+            seen_pids.add(pid)
+
             conns = conns_by_pid.get(pid, [])
             up, down = pid_rates.get(pid, (0.0, 0.0))
             tup, tdown = pid_totals.get(pid, (0, 0))
@@ -321,6 +368,24 @@ class Monitor:
                 ct = conn_totals.get(c.key)
                 if ct:
                     c.up_total, c.down_total = ct
+
+            # --- activity tracking for idle-hiding. "Active" = measurable
+            # traffic, or the set of connections changed (covers the no-driver
+            # case where we can't see bytes).
+            conn_set = frozenset(c.key for c in conns)
+            changed = self._prev_conns.get(pid) != conn_set
+            self._prev_conns[pid] = conn_set
+            if (up > 0 or down > 0) or changed:
+                self._last_active[pid] = now_wall
+            last = self._last_active.setdefault(pid, now_wall)
+            idle = idle_secs is not None and (now_wall - last) > idle_secs
+
+            # --- WAN/LAN classification from the connections' remote IPs
+            uses_wan = False
+            for c in conns:
+                if c.remote_ip and _is_wan(c.remote_ip, nets):
+                    uses_wan = True
+                    break
 
             exe = self.procmap.exe(pid)
             limit = s.exe_limit(exe) if exe else (0, 0)
@@ -345,8 +410,22 @@ class Monitor:
                 up_limit=limit[0],
                 down_limit=limit[1],
                 tag=s.exe_tags.get(exe, "") if exe else "",
+                uses_wan=uses_wan,
             )
-            procs.append(ps)
+            if not idle:                 # idle processes drop off the list
+                procs.append(ps)
+
+        # forget terminated pids everywhere
+        if dead_pids:
+            for pid in dead_pids:
+                self._last_active.pop(pid, None)
+                self._prev_conns.pop(pid, None)
+            self.backend.forget_pids(dead_pids)
+        # also prune activity maps for pids we no longer track at all
+        stale = set(self._last_active) - seen_pids - live_pids
+        for pid in stale:
+            self._last_active.pop(pid, None)
+            self._prev_conns.pop(pid, None)
 
         # hand the limited apps' ports to the enforcer (narrow divert filter)
         self.backend.set_enforced_ports(enforced_ports)

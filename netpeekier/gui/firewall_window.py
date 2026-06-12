@@ -110,6 +110,8 @@ class RuleDialog(tk.Toplevel):
 
         self._update_cap_note()
         self.bind("<Return>", lambda _e: self._ok())
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
         self.grab_set()
 
     def _tag_cap(self):
@@ -193,6 +195,8 @@ class ProcessPicker(tk.Toplevel):
             side="right", padx=6)
         tk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
         self.tree.bind("<Double-1>", lambda _e: self._select())
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
         self.grab_set()
 
     def _select(self) -> None:
@@ -216,6 +220,8 @@ class FirewallManagerWindow(tk.Toplevel):
                        ("#0", "blocked", "up", "down", "tag", "path"))
         self.protocol("WM_DELETE_WINDOW", self._close)
         self._refresh()
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
 
     def _close(self) -> None:
         capture_widths(self.tree, "firewall", self.monitor.settings,
@@ -463,6 +469,8 @@ class TagRulesWindow(tk.Toplevel):
             side="right", padx=2)
 
         self._refresh()
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
 
     def _close(self) -> None:
         capture_widths(self.tree, "tagrules", self.monitor.settings,
@@ -583,6 +591,8 @@ class _TagDialog(tk.Toplevel):
         tk.Button(btns, text="Cancel", width=10, command=self.destroy).pack(
             side="left", padx=4)
         self.bind("<Return>", lambda _e: self._ok())
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
         self.grab_set()
 
     def _ok(self) -> None:

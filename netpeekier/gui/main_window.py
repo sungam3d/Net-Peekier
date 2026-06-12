@@ -62,12 +62,36 @@ class NetPeekierApp(tk.Tk):
 
         self._build_style()
         self._build_dashboard()
+        self._build_filterbar()
         self._build_app_list()
         self._build_menu()
         self._build_statusbar()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(REFRESH_MS, self._refresh)
+
+    # ---- filter toolbar ---------------------------------------------------
+    def _build_filterbar(self) -> None:
+        bar = tk.Frame(self, bg="#d6dce4")
+        bar.pack(side="top", fill="x", padx=8, pady=(2, 0))
+        self.var_show_lan = tk.BooleanVar(value=self.monitor.settings.show_lan)
+        self.var_show_wan = tk.BooleanVar(value=self.monitor.settings.show_wan)
+        tk.Checkbutton(bar, text="Show LAN", bg="#d6dce4",
+                       variable=self.var_show_lan,
+                       command=self._on_filter_change).pack(side="left")
+        tk.Checkbutton(bar, text="Show WAN", bg="#d6dce4",
+                       variable=self.var_show_wan,
+                       command=self._on_filter_change).pack(side="left", padx=(8, 0))
+        tk.Label(bar, bg="#d6dce4", fg="#666",
+                 text="(LAN = local-only traffic; WAN = internet. "
+                      "Edit LAN ranges in Settings.)").pack(side="left", padx=12)
+
+    def _on_filter_change(self) -> None:
+        self.monitor.settings.show_lan = self.var_show_lan.get()
+        self.monitor.settings.show_wan = self.var_show_wan.get()
+        self.monitor.settings.save()
+        procs, _ = self.monitor.snapshot()
+        self._update_tree(procs)
 
     # ---- styling ----------------------------------------------------------
     def _build_style(self) -> None:
@@ -264,6 +288,12 @@ class NetPeekierApp(tk.Tk):
 
     def _update_tree(self, procs: List[ProcStat]) -> None:
         unit = self.monitor.settings.speed_unit
+        show_lan = self.var_show_lan.get()
+        show_wan = self.var_show_wan.get()
+        # LAN/WAN view filter: a WAN process has an internet remote; everything
+        # else (local-only or no remote) counts as LAN.
+        procs = [p for p in procs
+                 if (p.uses_wan and show_wan) or (not p.uses_wan and show_lan)]
         # group by process name (svchost.exe -> several PIDs), like NetPeeker
         groups: Dict[str, List[ProcStat]] = {}
         for p in procs:

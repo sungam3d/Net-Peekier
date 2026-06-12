@@ -51,6 +51,8 @@ class PacketsWindow(tk.Toplevel):
 
         restore_widths(self.tree, "packets", self.monitor.settings, _PCOLS)
         self.protocol("WM_DELETE_WINDOW", self._close)
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
 
     def _close(self) -> None:

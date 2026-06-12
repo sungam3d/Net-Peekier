@@ -100,6 +100,10 @@ class CaptureBackend:
         backend can't measure per-process bytes."""
         return {}
 
+    def forget_pids(self, pids) -> None:
+        """Drop cached byte counters for terminated PIDs."""
+        ...
+
     def conn_totals(self):
         """Cumulative {conn_key: (bytes_up, bytes_down)} since start."""
         return {}
@@ -276,6 +280,12 @@ class WinDivertBackend(CaptureBackend):
         """Cumulative (bytes_up, bytes_down) per PID since start."""
         with self._lock:
             return {pid: (a.up, a.down) for pid, a in self._pid_total.items()}
+
+    def forget_pids(self, pids) -> None:
+        with self._lock:
+            for pid in pids:
+                self._pid_total.pop(pid, None)
+                self._pid_acc.pop(pid, None)
 
     def conn_totals(self) -> Dict[ConnKey, Tuple[int, int]]:
         """Cumulative (bytes_up, bytes_down) per connection since start."""

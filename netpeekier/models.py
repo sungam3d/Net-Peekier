@@ -75,6 +75,7 @@ class ProcStat:
     up_limit: int = 0         # bytes/sec, 0 = unlimited
     down_limit: int = 0
     tag: str = ""             # user-assigned group tag, "" if none
+    uses_wan: bool = False    # True if any connection has a WAN (internet) remote
 
 
 @dataclass

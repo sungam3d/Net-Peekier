@@ -149,6 +149,38 @@ Open the **Settings** menu (top bar). Settings persist with everything else to
   connection, but over a long session the number of tracked connections grows,
   so a purge interval keeps memory in check. The purge runs on the monitor's
   one-second tick and also forgets connections whose buffers empty out.
+- **Hide idle processes** — remove a process from the list when it has had no
+  internet activity for *N* minutes (blank = always show). A hidden process
+  reappears the instant it uses the network again. With WinDivert active,
+  "activity" means measured traffic; without it, activity is inferred from the
+  process opening or closing connections.
+- **LAN address ranges** — the CIDR ranges treated as local. Sensible defaults
+  are filled in (private, loopback, link-local, IPv6 ULA/link-local); you can
+  Add, Edit, Remove or Reset to defaults. Anything outside these ranges counts
+  as WAN (internet) and drives the Show LAN / Show WAN toggles below.
+
+## Show LAN / Show WAN
+
+Two checkboxes above the process list filter what's shown:
+
+- **Show LAN** — processes whose traffic stays inside the configured LAN ranges
+  (plus processes with no internet remote at all).
+- **Show WAN** — processes talking to at least one internet (non-LAN) address.
+
+Both are on by default (everything shows). Untick **Show WAN** to focus on
+purely local activity, or untick **Show LAN** to see only what's reaching the
+internet. The ranges that decide LAN vs WAN are edited in Settings.
+
+## Terminated processes
+
+The list self-cleans: when a process exits, it's detected on the next tick and
+removed (its cached byte counters are forgotten too), so dead processes never
+linger in the list.
+
+## Window placement
+
+Every window — Detail Information, Captured Packets, the firewall/limits and tag
+managers, Settings, and all dialogs — opens centered over the main window.
 
 ## Where files live
 
@@ -214,7 +246,8 @@ netpeekier/
     packets_window.py      captured packets + hex dump + export-to-log
     firewall_window.py     firewall/limits manager + tag-group rules
     tag_picker.py          tag chooser (drop-down of existing + free input)
-    settings_window.py     speed unit + packet-log purge interval
+    settings_window.py     speed unit, purge, idle-hide, LAN ranges
+    winutil.py             centers child windows over the main window
     treesort.py            reusable click-to-sort for every table
     tablestyle.py          row striping, blocked colours, column-width saving
 ```

@@ -46,6 +46,8 @@ class TagPickerDialog(tk.Toplevel):
             side="left", padx=4)
 
         self.bind("<Return>", lambda _e: self._ok())
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
         self.grab_set()
 
     def _ok(self) -> None:

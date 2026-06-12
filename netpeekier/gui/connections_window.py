@@ -72,6 +72,8 @@ class ConnectionsWindow(tk.Toplevel):
 
         self.tree.bind("<Double-1>", self._on_double_click)
 
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
 
     def _close(self) -> None:

@@ -20,6 +20,14 @@ from typing import Dict, List, Optional, Tuple
 
 SPEED_UNITS = ("auto", "B/s", "KB/s", "MB/s")
 
+# Default "LAN" ranges: private, loopback, link-local, etc. Anything a remote
+# address falls outside of is treated as WAN (internet) traffic.
+DEFAULT_LAN_RANGES = [
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+    "127.0.0.0/8", "169.254.0.0/16",
+    "::1/128", "fc00::/7", "fe80::/10",
+]
+
 # All filesystem locations live in paths.py (single source of truth).
 from .paths import ROOT as PROGRAM_ROOT, SETTINGS_FILE as SETTINGS_PATH, \
     LOG_DIR, ensure_log_dir  # noqa: F401  (re-exported for convenience)
@@ -39,6 +47,14 @@ class Settings:
     tag_blocked: List[str] = field(default_factory=list)            # tags blocked
     # remembered column widths: {window_key: {column_id: width}}
     column_widths: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # hide processes idle (no internet activity) for this many minutes; None=off
+    idle_hide_minutes: Optional[int] = None
+    # LAN address ranges (CIDR). Remotes outside these are WAN/internet.
+    lan_ranges: List[str] = field(
+        default_factory=lambda: list(DEFAULT_LAN_RANGES))
+    # main-list view toggles
+    show_lan: bool = True
+    show_wan: bool = True
 
     # ---- convenience views -----------------------------------------------
     def exe_limit(self, exe: str) -> Tuple[int, int]:
@@ -55,6 +71,17 @@ class Settings:
     def all_tags(self) -> List[str]:
         return sorted(set(self.exe_tags.values()) | set(self.tag_limits)
                       | set(self.tag_blocked))
+
+    def lan_networks(self):
+        """Parsed ip_network objects for the configured LAN ranges."""
+        import ipaddress
+        nets = []
+        for c in self.lan_ranges:
+            try:
+                nets.append(ipaddress.ip_network(c, strict=False))
+            except Exception:
+                pass
+        return nets
 
     def tags(self) -> List[str]:
         return self.all_tags()
@@ -83,6 +110,13 @@ class Settings:
             cw = data.get("column_widths", {})
             s.column_widths = {k: {c: int(w) for c, w in v.items()}
                                for k, v in cw.items()}
+            ihm = data.get("idle_hide_minutes")
+            s.idle_hide_minutes = int(ihm) if ihm not in (None, "") else None
+            lr = data.get("lan_ranges")
+            if isinstance(lr, list) and lr:
+                s.lan_ranges = [str(x) for x in lr]
+            s.show_lan = bool(data.get("show_lan", True))
+            s.show_wan = bool(data.get("show_wan", True))
         except Exception:
             pass
         return s
@@ -99,6 +133,10 @@ class Settings:
                     "tag_limits": self.tag_limits,
                     "tag_blocked": self.tag_blocked,
                     "column_widths": self.column_widths,
+                    "idle_hide_minutes": self.idle_hide_minutes,
+                    "lan_ranges": self.lan_ranges,
+                    "show_lan": self.show_lan,
+                    "show_wan": self.show_wan,
                 }, f, indent=2)
         except Exception:
             pass

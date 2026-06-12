@@ -2,7 +2,16 @@
   "speed_unit": "KB/s",
   "packet_purge_minutes": 1,
   "blocked_exes": [],
-  "exe_limits": {},
+  "exe_limits": {
+    "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": [
+      512000,
+      512000
+    ],
+    "C:\\Program Files (x86)\\Acronis\\TrueImageHome\\Agent\\aakore.exe": [
+      512000,
+      512000
+    ]
+  },
   "exe_tags": {
     "C:\\Program Files\\Royal TS V7\\RoyalTS.exe": "remote desktop",
     "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe": "remote desktop",
@@ -11,10 +20,13 @@
     "C:\\Program Files (x86)\\Acronis\\TrueImageHome\\Agent\\aakore.exe": "Blocked",
     "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": "Blocked"
   },
-  "tag_limits": {},
-  "tag_blocked": [
-    "Blocked"
-  ],
+  "tag_limits": {
+    "Blocked": [
+      512000,
+      512000
+    ]
+  },
+  "tag_blocked": [],
   "column_widths": {
     "tagrules": {
       "#0": 134,
@@ -59,5 +71,18 @@
       "tag": 94,
       "ports": 174
     }
-  }
+  },
+  "idle_hide_minutes": null,
+  "lan_ranges": [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10"
+  ],
+  "show_lan": true,
+  "show_wan": true
 }
