@@ -9,11 +9,13 @@ from __future__ import annotations
 import time
 import tkinter as tk
 from datetime import datetime
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import List
 
 from ..models import Packet
 from ..monitor import Monitor
+from ..paths import ensure_log_dir
+from .treesort import TreeSorter, configure_stripes, apply_stripes
 
 REFRESH_MS = 1000
 
@@ -51,17 +53,22 @@ class PacketsWindow(tk.Toplevel):
         top.pack(side="top", fill="both", expand=True)
 
         cols = ("time", "local", "dir", "remote", "proto", "len")
-        self.tree = ttk.Treeview(top, columns=cols, show="headings", height=14)
+        self.tree = ttk.Treeview(top, columns=cols, show="headings", height=14,
+                                 selectmode="extended")
         headings = {
             "time": ("Time", 175), "local": ("Local Address", 150),
             "dir": ("D.", 35), "remote": ("Remote Address", 150),
             "proto": ("Protocol", 70), "len": ("Packet", 60),
         }
         for c, (txt, w) in headings.items():
-            self.tree.heading(c, text=txt)
             anchor = "center" if c == "dir" else (
                 "e" if c == "len" else "w")
             self.tree.column(c, width=w, anchor=anchor)
+        self._sortkeys: dict[str, dict] = {}
+        self.sorter = TreeSorter(
+            self.tree, {c: t for c, (t, _w) in headings.items()},
+            lambda iid, col: self._sortkeys.get(iid, {}).get(col),
+            default_col="time", default_reverse=False)
 
         vsb = ttk.Scrollbar(top, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -70,7 +77,15 @@ class PacketsWindow(tk.Toplevel):
 
         self.tree.tag_configure("out", foreground="#0a7d00")
         self.tree.tag_configure("in", foreground="#1a4fc4")
+        configure_stripes(self.tree)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.bind("<Button-3>", self._on_right_click)
+
+        self.ctx = tk.Menu(self, tearoff=0)
+        self.ctx.add_command(label="Export selected to log...",
+                             command=self._export_selected)
+        self.ctx.add_command(label="Export all to log...",
+                             command=self._export)
 
     def _build_dump(self) -> None:
         frame = tk.LabelFrame(self, text="Packet bytes")
@@ -107,6 +122,8 @@ class PacketsWindow(tk.Toplevel):
         at_bottom = self._is_scrolled_bottom()
         self.tree.delete(*self.tree.get_children())
         self._packets = list(packets)
+        sortkeys: dict[str, dict] = {}
+        rowtags: dict[str, tuple] = {}
         for i, p in enumerate(self._packets):
             ts = datetime.fromtimestamp(p.ts).strftime("%H:%M:%S.") + \
                 f"{int((p.ts % 1) * 1000):03d}"
@@ -115,9 +132,17 @@ class PacketsWindow(tk.Toplevel):
             tag = "out" if p.outbound else "in"
             self.tree.insert("", "end", iid=str(i),
                              values=(ts, local, p.direction_arrow, remote,
-                                     p.protocol, p.length),
-                             tags=(tag,))
-        if at_bottom and self._packets:
+                                     p.protocol, p.length))
+            rowtags[str(i)] = (tag,)
+            sortkeys[str(i)] = {
+                "time": p.ts, "local": p.local_port, "dir": p.direction_arrow,
+                "remote": p.remote_ip, "proto": p.protocol, "len": p.length,
+            }
+        self._sortkeys = sortkeys
+        self.sorter.apply()
+        apply_stripes(self.tree, rowtags)
+        if at_bottom and self.sorter.col == "time" and not self.sorter.reverse \
+                and self._packets:
             self.tree.see(str(len(self._packets) - 1))
 
     def _is_scrolled_bottom(self) -> bool:
@@ -126,11 +151,17 @@ class PacketsWindow(tk.Toplevel):
         except Exception:
             return True
 
+    def _on_right_click(self, event) -> None:
+        iid = self.tree.identify_row(event.y)
+        if iid and iid not in self.tree.selection():
+            self.tree.selection_set(iid)
+        self.ctx.tk_popup(event.x_root, event.y_root)
+
     def _on_select(self, _event) -> None:
         sel = self.tree.selection()
         if not sel:
             return
-        idx = int(sel[0])
+        idx = int(sel[-1])
         if 0 <= idx < len(self._packets):
             p = self._packets[idx]
             self.dump.configure(state="normal")
@@ -145,22 +176,60 @@ class PacketsWindow(tk.Toplevel):
         self.dump.delete("1.0", "end")
         self.dump.configure(state="disabled")
 
-    def _export(self) -> None:
+    # ---- export -----------------------------------------------------------
+    def _packet_report(self, p: Packet, index: int) -> str:
+        """As much detail as we have about one packet, plus its hex dump."""
+        dt = datetime.fromtimestamp(p.ts)
+        lines = [
+            f"Packet #{index}",
+            f"  Time          : {dt.strftime('%Y-%m-%d %H:%M:%S.')}"
+            f"{int((p.ts % 1) * 1000):03d}",
+            f"  Direction     : {'OUTBOUND -->' if p.outbound else 'INBOUND <--'}",
+            f"  Protocol      : {p.protocol}",
+            f"  Local address : {p.local_ip}:{p.local_port}",
+            f"  Remote address: {p.remote_ip}:{p.remote_port}",
+            f"  Length        : {p.length} bytes",
+            f"  Owner PID     : {p.pid if p.pid is not None else 'unknown'}",
+            "  Hex dump:",
+        ]
+        dump = hexdump(p.raw)
+        lines.extend("    " + ln for ln in dump.splitlines())
+        return "\n".join(lines)
+
+    def _write_log(self, packets: List[Packet], title: str) -> None:
+        if not packets:
+            messagebox.showinfo("Export", "No packets to export.", parent=self)
+            return
+        default_name = "packets_" + datetime.now().strftime("%Y%m%d_%H%M%S") \
+            + ".log"
         path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text", "*.txt"), ("All", "*.*")],
-            title="Export captured packets")
+            title=title, defaultextension=".log", initialdir=ensure_log_dir(),
+            initialfile=default_name,
+            filetypes=[("Log file", "*.log"), ("Text", "*.txt"),
+                       ("All", "*.*")])
         if not path:
             return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(f"# Net-Peekier capture  {time.ctime()}\n")
-            f.write(f"# Connection: {self.conn_key}\n\n")
-            for p in self._packets:
-                ts = datetime.fromtimestamp(p.ts).isoformat()
-                f.write(f"{ts}  {p.direction_arrow}  "
-                        f"{p.local_ip}:{p.local_port} <-> "
-                        f"{p.remote_ip}:{p.remote_port}  "
-                        f"{p.protocol}  {p.length} bytes\n")
-                if p.raw:
-                    f.write(hexdump(p.raw) + "\n")
-                f.write("\n")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("Net-Peekier packet log\n")
+                f.write(f"Generated : {datetime.now().isoformat()}\n")
+                f.write(f"Connection: {self.conn_key}\n")
+                f.write(f"Packets   : {len(packets)}\n")
+                f.write("=" * 60 + "\n\n")
+                for i, p in enumerate(packets, 1):
+                    f.write(self._packet_report(p, i))
+                    f.write("\n\n")
+            messagebox.showinfo("Export",
+                                f"Saved {len(packets)} packet(s) to:\n{path}",
+                                parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export", str(exc), parent=self)
+
+    def _export_selected(self) -> None:
+        sel = self.tree.selection()
+        idxs = sorted(int(i) for i in sel if i.isdigit())
+        packets = [self._packets[i] for i in idxs if 0 <= i < len(self._packets)]
+        self._write_log(packets, "Export selected packets to log")
+
+    def _export(self) -> None:
+        self._write_log(self._packets, "Export all packets to log")

@@ -39,7 +39,12 @@ ConnKey = Tuple[str, str, int, str, int]  # proto, lip, lport, rip, rport
 
 
 class TokenBucket:
-    """Classic token bucket for per-PID rate limiting (bytes/sec)."""
+    """Classic token bucket for rate limiting (bytes/sec).
+
+    Split into can()/take() so a packet that must satisfy several buckets (its
+    own limit AND a shared tag limit) only consumes tokens when ALL of them can
+    afford it -- otherwise checking the first would wrongly burn its tokens.
+    """
 
     def __init__(self, rate: int) -> None:
         self.rate = max(1, rate)
@@ -49,12 +54,21 @@ class TokenBucket:
     def set_rate(self, rate: int) -> None:
         self.rate = max(1, rate)
 
-    def allow(self, size: int) -> bool:
+    def _refill(self) -> None:
         now = time.monotonic()
         self.tokens = min(self.rate, self.tokens + (now - self.last) * self.rate)
         self.last = now
-        if self.tokens >= size:
-            self.tokens -= size
+
+    def can(self, size: int) -> bool:
+        self._refill()
+        return self.tokens >= size
+
+    def take(self, size: int) -> None:
+        self.tokens -= size
+
+    def allow(self, size: int) -> bool:
+        if self.can(size):
+            self.take(size)
             return True
         return False
 
@@ -86,12 +100,25 @@ class CaptureBackend:
         backend can't measure per-process bytes."""
         return {}
 
+    def conn_totals(self):
+        """Cumulative {conn_key: (bytes_up, bytes_down)} since start."""
+        return {}
+
+    def set_purge_minutes(self, minutes) -> None: ...
+    def purge_packets(self) -> None: ...
+
     def recent_packets(self, conn_key: ConnKey):
         return []
 
     # traffic control (keyed by executable path) ---------------------------
     def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None: ...
     def set_blocked(self, exe: str, blocked: bool) -> None: ...
+    def set_tag_limit(self, tag: str, up_bps: int, down_bps: int) -> None: ...
+    def set_exe_tag(self, exe: str, tag) -> None: ...
+    def set_enforced_ports(self, ports) -> None: ...
+
+    def limited_exes(self) -> set:
+        return set()
 
 
 class NullBackend(CaptureBackend):
@@ -118,22 +145,31 @@ class WinDivertBackend(CaptureBackend):
         self._lock = threading.Lock()
         self._pid_acc: Dict[int, _Accum] = defaultdict(_Accum)
         self._conn_acc: Dict[ConnKey, _Accum] = defaultdict(_Accum)
-        # Cumulative per-PID byte totals since start. Unlike _pid_acc these are
-        # never cleared, so they back the "total sent/received" columns.
+        # Cumulative byte totals since start. Unlike the *_acc dicts these are
+        # never reset, so they back the "total sent/received" columns.
         self._pid_total: Dict[int, _Accum] = defaultdict(_Accum)
+        self._conn_total: Dict[ConnKey, _Accum] = defaultdict(_Accum)
         self._packets: Dict[ConnKey, Deque[Packet]] = defaultdict(
             lambda: deque(maxlen=packet_ring))
+        # packet-log purge: None = keep (ring cap only); N = drop older than N min
+        self._purge_minutes: Optional[int] = None
 
         self._sniff_thread: Optional[threading.Thread] = None
         self._enforce_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
 
-        # Rate-limit rules, keyed by executable path. NOTE: blocking is handled
-        # exclusively by the OS firewall (firewall.py), NOT here. Diverting all
-        # traffic through this userspace loop just to drop one app's packets
-        # stalls everything else, so the enforcer only ever runs for limits.
+        # Rate-limit rules. Blocking is handled exclusively by the OS firewall
+        # (firewall.py), never here. The enforcer ONLY diverts the specific
+        # ports of limited apps (see _enforced_ports), so other processes are
+        # never pulled through this userspace loop.
         self._rules_lock = threading.Lock()
-        self._buckets: Dict[str, Tuple[TokenBucket, TokenBucket]] = {}
+        self._buckets: Dict[str, Tuple[TokenBucket, TokenBucket]] = {}  # exe
+        self._tag_buckets: Dict[str, Tuple[TokenBucket, TokenBucket]] = {}  # tag
+        self._exe_tag: Dict[str, str] = {}        # exe -> tag
+        # Local ports of all limited apps; the divert filter is built from this
+        # so the enforcer only ever sees the targeted apps' packets.
+        self._enforced_ports: set[int] = set()
+        self._enforce_handle = None               # live divert handle (to close)
 
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> None:
@@ -190,10 +226,13 @@ class WinDivertBackend(CaptureBackend):
                     acc.down += length
                     tot.down += length
             cacc = self._conn_acc[conn_key]
+            ctot = self._conn_total[conn_key]
             if outbound:
                 cacc.up += length
+                ctot.up += length
             else:
                 cacc.down += length
+                ctot.down += length
 
             self._packets[conn_key].append(Packet(
                 ts=time.time(), outbound=outbound, protocol=proto,
@@ -224,6 +263,33 @@ class WinDivertBackend(CaptureBackend):
         with self._lock:
             return {pid: (a.up, a.down) for pid, a in self._pid_total.items()}
 
+    def conn_totals(self) -> Dict[ConnKey, Tuple[int, int]]:
+        """Cumulative (bytes_up, bytes_down) per connection since start."""
+        with self._lock:
+            return {k: (a.up, a.down) for k, a in self._conn_total.items()}
+
+    def set_purge_minutes(self, minutes: Optional[int]) -> None:
+        with self._lock:
+            self._purge_minutes = minutes if minutes and minutes > 0 else None
+
+    def purge_packets(self) -> None:
+        """Drop captured packets older than the configured window, and forget
+        connections whose buffers go empty. No-op when purging is disabled."""
+        with self._lock:
+            if not self._purge_minutes:
+                return
+            cutoff = time.time() - self._purge_minutes * 60
+            empty: list = []
+            for key, dq in self._packets.items():
+                while dq and dq[0].ts < cutoff:
+                    dq.popleft()
+                if not dq:
+                    empty.append(key)
+            for key in empty:
+                del self._packets[key]
+                # the cumulative counter for a long-dead connection can go too
+                self._conn_total.pop(key, None)
+
     def recent_packets(self, conn_key: ConnKey):
         with self._lock:
             return list(self._packets.get(conn_key, ()))
@@ -242,15 +308,50 @@ class WinDivertBackend(CaptureBackend):
                 )
         self._sync_enforcer()
 
+    def set_tag_limit(self, tag: str, up_bps: int, down_bps: int) -> None:
+        """Aggregate limit shared by every app carrying this tag."""
+        if not tag:
+            return
+        with self._rules_lock:
+            if up_bps <= 0 and down_bps <= 0:
+                self._tag_buckets.pop(tag, None)
+            else:
+                self._tag_buckets[tag] = (
+                    TokenBucket(up_bps if up_bps > 0 else 10**12),
+                    TokenBucket(down_bps if down_bps > 0 else 10**12),
+                )
+        self._sync_enforcer()
+
+    def set_exe_tag(self, exe: str, tag: Optional[str]) -> None:
+        with self._rules_lock:
+            if tag:
+                self._exe_tag[exe] = tag
+            else:
+                self._exe_tag.pop(exe, None)
+
+    def set_enforced_ports(self, ports: set) -> None:
+        """Local ports of all limited apps. The divert filter is rebuilt from
+        these so ONLY those apps' packets are pulled into userspace; everything
+        else stays on the kernel fast path and is never affected."""
+        ports = set(ports)
+        with self._rules_lock:
+            changed = ports != self._enforced_ports
+            self._enforced_ports = ports
+            handle = self._enforce_handle
+        if changed and handle is not None:
+            # break the blocking recv so the loop rebuilds its filter
+            try:
+                handle.close()
+            except Exception:
+                pass
+
     def set_blocked(self, exe: str, blocked: bool) -> None:
-        # Intentionally a no-op. Blocking is enforced by the OS firewall
-        # (firewall.py), which is selective and kernel-level. Doing it here
-        # would force every packet through this loop and stall all traffic.
+        # No-op. Blocking is the OS firewall's job (selective, kernel-level).
         return
 
     def _has_rules(self) -> bool:
         with self._rules_lock:
-            return bool(self._buckets)
+            return bool(self._buckets or self._tag_buckets)
 
     def _sync_enforcer(self) -> None:
         """Start the enforcer thread on first limit; it self-exits when idle."""
@@ -261,47 +362,85 @@ class WinDivertBackend(CaptureBackend):
                 target=self._enforce_loop, name="np-enforce", daemon=True)
             self._enforce_thread.start()
 
+    def _build_filter(self) -> Optional[str]:
+        """A WinDivert filter that matches ONLY the limited apps' ports, so the
+        enforcer never touches unrelated traffic. None -> nothing to enforce."""
+        with self._rules_lock:
+            ports = sorted(self._enforced_ports)
+        if not ports:
+            return None
+        clauses = [
+            f"(tcp.SrcPort=={p} or tcp.DstPort=={p} or "
+            f"udp.SrcPort=={p} or udp.DstPort=={p})"
+            for p in ports
+        ]
+        flt = " or ".join(clauses)
+        # WinDivert caps filter length; if we somehow exceed it, enforce nothing
+        # rather than fall back to a machine-wide divert (which is the bug we're
+        # avoiding). In practice a handful of limited apps stays well under.
+        return flt if len(flt) < 1800 else None
+
     def _enforce_loop(self) -> None:
-        # Divert (not sniff): we now OWN these packets and MUST reinject the
-        # ones we allow, or they are dropped. This loop is FAIL-OPEN: any error
-        # or uncertainty reinjects the packet, so a bug here can never take the
-        # machine offline. Only packets we can positively attribute to a
-        # rate-limited app and that exceed its budget are dropped.
-        try:
-            handle = pydivert.WinDivert(self.SNIFF_FILTER)
-        except Exception as exc:
-            print(f"[netpeekier] WinDivert enforcer failed: {exc}")
-            return
-        with handle:
-            while self._running.is_set() and self._has_rules():
-                try:
-                    packet = handle.recv()
-                except Exception:
-                    if not self._running.is_set():
-                        break
-                    continue
-                # Keep our PID table fresh without depending on the monitor
-                # thread's cadence (cheap: guarded by min_interval internally).
-                try:
-                    self.procmap.refresh()
-                except Exception:
-                    pass
-                drop = False
-                try:
-                    drop = not self._allow_packet(packet)
-                except Exception:
-                    drop = False  # fail open
-                if not drop:
+        # Divert mode: we OWN matched packets and MUST reinject the allowed ones
+        # or they're dropped. FAIL-OPEN throughout: any error reinjects. Because
+        # the filter is scoped to limited ports, the blast radius is only the
+        # apps you chose to limit -- never the rest of the system.
+        current_filter = None
+        handle = None
+        while self._running.is_set() and self._has_rules():
+            want = self._build_filter()
+            if want != current_filter:
+                if handle is not None:
                     try:
-                        handle.send(packet)
+                        handle.close()
                     except Exception:
                         pass
+                    handle = None
+                    with self._rules_lock:
+                        self._enforce_handle = None
+                current_filter = want
+                if want is None:
+                    time.sleep(0.4)  # nothing to police yet; wait for ports
+                    continue
+                try:
+                    handle = pydivert.WinDivert(want)
+                    handle.open()
+                    with self._rules_lock:
+                        self._enforce_handle = handle
+                except Exception as exc:
+                    print(f"[netpeekier] WinDivert enforcer failed: {exc}")
+                    time.sleep(0.5)
+                    handle = None
+                    continue
+            try:
+                packet = handle.recv()
+            except Exception:
+                # handle was closed (ports changed) or stopping; re-evaluate
+                handle = None
+                current_filter = None
+                with self._rules_lock:
+                    self._enforce_handle = None
+                continue
+            drop = False
+            try:
+                drop = not self._allow_packet(packet)
+            except Exception:
+                drop = False
+            if not drop:
+                try:
+                    handle.send(packet)
+                except Exception:
+                    pass
+        # cleanup
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+            with self._rules_lock:
+                self._enforce_handle = None
 
     def _allow_packet(self, packet) -> bool:
-        # Fast path: no limits at all -> allow everything immediately.
-        with self._rules_lock:
-            if not self._buckets:
-                return True
         proto, lip, lport, rip, rport, length = _decode(packet)
         if proto is None:
             return True
@@ -312,12 +451,36 @@ class WinDivertBackend(CaptureBackend):
         if not exe:
             return True
         with self._rules_lock:
-            buckets = self._buckets.get(exe)
-        if buckets is None:
-            return True  # this app has no limit -> always allow
-        up_b, down_b = buckets
-        bucket = up_b if packet.is_outbound else down_b
-        return bucket.allow(length)
+            exe_buckets = self._buckets.get(exe)
+            tag = self._exe_tag.get(exe)
+            tag_buckets = self._tag_buckets.get(tag) if tag else None
+        outbound = packet.is_outbound
+        # Must satisfy BOTH its own limit and any shared tag limit. The shared
+        # tag bucket is what makes several tagged apps compete for one budget:
+        # whichever asks first gets the tokens, so a second app launching makes
+        # the first naturally slow to stay under the group total. We check all
+        # relevant buckets first and only consume if every one can afford it.
+        relevant = []
+        for buckets in (exe_buckets, tag_buckets):
+            if buckets is not None:
+                relevant.append(buckets[0] if outbound else buckets[1])
+        if not relevant:
+            return True
+        if all(b.can(length) for b in relevant):
+            for b in relevant:
+                b.take(length)
+            return True
+        return False
+
+    def limited_exes(self) -> set:
+        """Exes that currently have any limit (own or via a limited tag)."""
+        with self._rules_lock:
+            exes = set(self._buckets)
+            limited_tags = set(self._tag_buckets)
+            for exe, tag in self._exe_tag.items():
+                if tag in limited_tags:
+                    exes.add(exe)
+        return exes
 
 
 def _decode(packet):

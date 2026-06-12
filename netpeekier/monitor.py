@@ -28,20 +28,22 @@ class Monitor:
         self.procmap = ProcessMap()
         self.backend: CaptureBackend = make_backend(self.procmap)
 
+        from .settings import Settings
+        self.settings = Settings.load()
+
         self._lock = threading.Lock()
         self._procs: List[ProcStat] = []
         self._totals = Totals()
-        # Rules are keyed by executable PATH, not PID, so they survive process
-        # restarts and can be managed even when the app isn't running.
-        self._blocked_exes: set[str] = set()
-        self._limits_by_exe: Dict[str, Tuple[int, int]] = {}
         # last per-connection rates, so detail windows can show them
         self._conn_rates: Dict[ConnKey, Tuple[float, float]] = {}
 
-        # Seed the blocked set from any firewall rules we created previously.
+        # Reconcile with the OS firewall: anything Windows still blocks that we
+        # created should appear in our settings too (and vice-versa on apply).
         try:
             from . import firewall
-            self._blocked_exes.update(firewall.list_blocked())
+            for exe in firewall.list_blocked():
+                if exe not in self.settings.blocked_exes:
+                    self.settings.blocked_exes.append(exe)
         except Exception:
             pass
 
@@ -67,11 +69,40 @@ class Monitor:
     def start(self) -> None:
         if self._running.is_set():
             return
+        self.apply_settings()
         self._running.set()
         self.backend.start()
         self._thread = threading.Thread(
             target=self._loop, name="np-monitor", daemon=True)
         self._thread.start()
+
+    def apply_settings(self) -> None:
+        """Push every rule from settings into the backend and the OS firewall.
+        Safe to call after any edit; it's idempotent."""
+        s = self.settings
+        self.backend.set_purge_minutes(s.packet_purge_minutes)
+        # per-exe limits
+        for exe in list(self.backend.limited_exes()):
+            self.backend.set_limit(exe, 0, 0)   # clear stale
+        for exe, (up, down) in list(s.exe_limits.items()):
+            self.backend.set_limit(exe, up, down)
+        # tags + tag limits
+        for exe, tag in s.exe_tags.items():
+            self.backend.set_exe_tag(exe, tag)
+        for tag, (up, down) in list(s.tag_limits.items()):
+            self.backend.set_tag_limit(tag, up, down)
+        # (re-)apply firewall blocks for exes we intend to block
+        try:
+            from . import firewall
+            for exe in list(s.blocked_exes):
+                firewall.block_app(exe)
+            # tag blocks: block every exe carrying a blocked tag
+            for tag in s.tag_blocked:
+                for exe in s.exes_with_tag(tag):
+                    firewall.block_app(exe)
+        except Exception:
+            pass
+        s.save()
 
     def stop(self) -> None:
         self._running.clear()
@@ -94,53 +125,89 @@ class Monitor:
     def packets_for(self, conn_key: ConnKey):
         return self.backend.recent_packets(conn_key)
 
-    # ---- control passthrough (all keyed by executable path) ---------------
+    # ---- control (all settings-backed, keyed by executable path) ----------
     def set_blocked(self, exe: str, blocked: bool) -> None:
-        # Bookkeeping only. The actual block is applied by the OS firewall
-        # (firewall.block_app / unblock_app, called from the GUI). We do NOT
-        # route blocking through the capture backend, because diverting all
-        # traffic to drop one app's packets stalls the whole connection.
         if not exe:
             return
-        with self._lock:
-            if blocked:
-                self._blocked_exes.add(exe)
-            else:
-                self._blocked_exes.discard(exe)
+        if blocked:
+            if exe not in self.settings.blocked_exes:
+                self.settings.blocked_exes.append(exe)
+        else:
+            if exe in self.settings.blocked_exes:
+                self.settings.blocked_exes.remove(exe)
+        self.settings.save()
 
     def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None:
         if not exe:
             return
-        with self._lock:
-            if up_bps <= 0 and down_bps <= 0:
-                self._limits_by_exe.pop(exe, None)
-            else:
-                self._limits_by_exe[exe] = (up_bps, down_bps)
+        if up_bps <= 0 and down_bps <= 0:
+            self.settings.exe_limits.pop(exe, None)
+        else:
+            self.settings.exe_limits[exe] = [up_bps, down_bps]
         self.backend.set_limit(exe, up_bps, down_bps)
+        self.settings.save()
+
+    def set_exe_tag(self, exe: str, tag) -> None:
+        if not exe:
+            return
+        if tag:
+            self.settings.exe_tags[exe] = tag
+        else:
+            self.settings.exe_tags.pop(exe, None)
+        self.backend.set_exe_tag(exe, tag)
+        # re-apply tag rules so a freshly-tagged app picks up group limits
+        self.apply_settings()
+
+    def set_tag_limit(self, tag: str, up_bps: int, down_bps: int) -> None:
+        if not tag:
+            return
+        if up_bps <= 0 and down_bps <= 0:
+            self.settings.tag_limits.pop(tag, None)
+        else:
+            self.settings.tag_limits[tag] = [up_bps, down_bps]
+        self.backend.set_tag_limit(tag, up_bps, down_bps)
+        self.settings.save()
+
+    def set_tag_blocked(self, tag: str, blocked: bool) -> None:
+        if not tag:
+            return
+        if blocked and tag not in self.settings.tag_blocked:
+            self.settings.tag_blocked.append(tag)
+        elif not blocked and tag in self.settings.tag_blocked:
+            self.settings.tag_blocked.remove(tag)
+        try:
+            from . import firewall
+            for exe in self.settings.exes_with_tag(tag):
+                if blocked:
+                    firewall.block_app(exe)
+                elif exe not in self.settings.blocked_exes:
+                    firewall.unblock_app(exe)
+        except Exception:
+            pass
+        self.settings.save()
 
     def remove_app(self, exe: str) -> None:
-        """Fully unmanage an app: drop its block and its limit."""
+        """Fully unmanage an app: drop block, limit and tag."""
         self.set_blocked(exe, False)
         self.set_limit(exe, 0, 0)
+        self.set_exe_tag(exe, None)
 
-    # ---- rule queries (for the firewall manager window) -------------------
+    # ---- rule queries (for the manager windows) ---------------------------
     def list_blocked(self) -> set[str]:
-        with self._lock:
-            return set(self._blocked_exes)
+        return set(self.settings.blocked_exes)
 
     def list_limits(self) -> Dict[str, Tuple[int, int]]:
-        with self._lock:
-            return dict(self._limits_by_exe)
+        return {k: (v[0], v[1]) for k, v in self.settings.exe_limits.items()}
 
-    def managed_apps(self) -> Dict[str, Tuple[bool, Tuple[int, int]]]:
-        """{exe: (blocked, (up_limit, down_limit))} for every managed app."""
-        with self._lock:
-            exes = set(self._blocked_exes) | set(self._limits_by_exe)
-            return {
-                exe: (exe in self._blocked_exes,
-                      self._limits_by_exe.get(exe, (0, 0)))
-                for exe in exes
-            }
+    def managed_apps(self) -> Dict[str, tuple]:
+        """{exe: (blocked, (up_limit, down_limit), tag)} for every managed app."""
+        s = self.settings
+        exes = set(s.blocked_exes) | set(s.exe_limits) | set(s.exe_tags)
+        return {
+            exe: (exe in s.blocked_exes, s.exe_limit(exe),
+                  s.exe_tags.get(exe, ""))
+            for exe in exes
+        }
 
     # ---- worker -----------------------------------------------------------
     def _loop(self) -> None:
@@ -162,6 +229,15 @@ class Monitor:
         conns_by_pid = self.procmap.snapshot_connections()
         pid_rates, conn_rates = self.backend.drain_rates(interval)
         pid_totals = self.backend.pid_totals()
+        conn_totals = self.backend.conn_totals()
+        # trim captured packet logs if a purge window is configured
+        self.backend.purge_packets()
+
+        s = self.settings
+        blocked_exes = set(s.blocked_exes)
+        # exes that the limiter must police (own limit, or a limited tag)
+        limited_exes = self.backend.limited_exes()
+        enforced_ports: set = set()
 
         procs: List[ProcStat] = []
         up_total = down_total = 0.0
@@ -175,14 +251,24 @@ class Monitor:
             up_total += up
             down_total += down
 
-            # stamp per-connection rates onto the Connection objects
+            # stamp per-connection rates + totals onto the Connection objects
             for c in conns:
                 cr = conn_rates.get(c.key)
                 if cr:
                     c.up_bps, c.down_bps = cr
+                ct = conn_totals.get(c.key)
+                if ct:
+                    c.up_total, c.down_total = ct
 
             exe = self.procmap.exe(pid)
-            limit = self._limits_by_exe.get(exe, (0, 0)) if exe else (0, 0)
+            limit = s.exe_limit(exe) if exe else (0, 0)
+            # collect this app's local ports if it's under a limit, so the
+            # enforcer's divert filter targets only these.
+            if exe and exe in limited_exes:
+                for c in conns:
+                    if c.local_port:
+                        enforced_ports.add(c.local_port)
+
             ps = ProcStat(
                 pid=pid,
                 name=self.procmap.name(pid),
@@ -193,11 +279,15 @@ class Monitor:
                 down_total=tdown,
                 listening_ports=self.procmap.listening_ports(conns),
                 connections=conns,
-                blocked=bool(exe) and exe in self._blocked_exes,
+                blocked=bool(exe) and exe in blocked_exes,
                 up_limit=limit[0],
                 down_limit=limit[1],
+                tag=s.exe_tags.get(exe, "") if exe else "",
             )
             procs.append(ps)
+
+        # hand the limited apps' ports to the enforcer (narrow divert filter)
+        self.backend.set_enforced_ports(enforced_ports)
 
         procs.sort(key=lambda p: (p.down_bps + p.up_bps, len(p.connections)),
                    reverse=True)

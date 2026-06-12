@@ -43,6 +43,9 @@ class Connection:
     # live, per-connection rates (bytes/sec), filled in by the monitor:
     up_bps: float = 0.0
     down_bps: float = 0.0
+    # cumulative bytes on this connection since app start:
+    up_total: float = 0.0
+    down_total: float = 0.0
 
     @property
     def key(self) -> tuple:
@@ -71,6 +74,7 @@ class ProcStat:
     blocked: bool = False
     up_limit: int = 0         # bytes/sec, 0 = unlimited
     down_limit: int = 0
+    tag: str = ""             # user-assigned group tag, "" if none
 
 
 @dataclass

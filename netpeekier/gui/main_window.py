@@ -20,15 +20,20 @@ Right-click / Firewall menu -> block, unblock, set speed limit.
 from __future__ import annotations
 
 import ctypes
+import os
+import subprocess
 import sys
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Dict, List
 
+import psutil
+
 from ..models import ProcStat
 from ..monitor import Monitor
-from ..util import human_speed, human_bytes, ports_str
+from ..util import human_speed, human_bytes, ports_str, unit_suffix
 from .connections_window import ConnectionsWindow
+from .treesort import TreeSorter, configure_stripes, apply_stripes
 
 REFRESH_MS = 1000
 
@@ -48,7 +53,7 @@ class NetPeekierApp(tk.Tk):
         super().__init__()
         self.monitor = monitor
         self.title("Net-Peekier  -  per-process network monitor")
-        self.geometry("840x560")
+        self.geometry("880x560")
         self.minsize(700, 420)
 
         self._child_windows: Dict[int, ConnectionsWindow] = {}
@@ -126,20 +131,15 @@ class NetPeekierApp(tk.Tk):
         frame = tk.Frame(self, bg="#d6dce4")
         frame.pack(side="top", fill="both", expand=True, padx=6, pady=3)
 
-        cols = ("up", "down", "tup", "tdown", "ports")
+        cols = ("up", "down", "tup", "tdown", "tag", "ports")
         self.tree = ttk.Treeview(frame, columns=cols, show="tree headings")
-        self.tree.heading("#0", text="Program")
-        self.tree.heading("up", text="Upload")
-        self.tree.heading("down", text="Download")
-        self.tree.heading("tup", text="Total Up")
-        self.tree.heading("tdown", text="Total Down")
-        self.tree.heading("ports", text="Listening Ports")
-        self.tree.column("#0", width=200, anchor="w")
-        self.tree.column("up", width=80, anchor="e")
-        self.tree.column("down", width=80, anchor="e")
-        self.tree.column("tup", width=90, anchor="e")
-        self.tree.column("tdown", width=90, anchor="e")
-        self.tree.column("ports", width=190, anchor="w")
+        self.tree.column("#0", width=185, anchor="w")
+        self.tree.column("up", width=78, anchor="e")
+        self.tree.column("down", width=78, anchor="e")
+        self.tree.column("tup", width=85, anchor="e")
+        self.tree.column("tdown", width=85, anchor="e")
+        self.tree.column("tag", width=80, anchor="w")
+        self.tree.column("ports", width=160, anchor="w")
 
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -150,6 +150,20 @@ class NetPeekierApp(tk.Tk):
 
         self.tree.tag_configure("blocked", foreground="#b00000")
         self.tree.tag_configure("active", foreground="#0a7d00")
+        configure_stripes(self.tree)
+
+        # raw values for click-to-sort + status tag per row, keyed by row id
+        self._sortkeys: Dict[str, Dict[str, object]] = {}
+        self._rowtags: Dict[str, tuple] = {}
+        self._base_headings = {
+            "#0": "Program", "up": "Upload", "down": "Download",
+            "tup": "Total Up", "tdown": "Total Down",
+            "tag": "Tag", "ports": "Listening Ports",
+        }
+        self.sorter = TreeSorter(
+            self.tree, self._base_headings,
+            lambda iid, col: self._sortkeys.get(iid, {}).get(col),
+            default_col="down", default_reverse=True)
 
         self.tree.bind("<Double-1>", self._on_double_click)
         self.tree.bind("<Button-3>", self._on_right_click)
@@ -159,6 +173,13 @@ class NetPeekierApp(tk.Tk):
         self.ctx.add_command(label="Show connections",
                              command=self._open_selected_connections)
         self.ctx.add_separator()
+        self.ctx.add_command(label="End Process",
+                             command=self._end_selected_process)
+        self.ctx.add_command(label="Open Program Path",
+                             command=self._open_selected_path)
+        self.ctx.add_separator()
+        self.ctx.add_command(label="Set tag...",
+                             command=self._tag_selected)
         self.ctx.add_command(label="Block (firewall)",
                              command=lambda: self._block_selected(True))
         self.ctx.add_command(label="Unblock",
@@ -188,10 +209,20 @@ class NetPeekierApp(tk.Tk):
                        command=self._limit_selected)
         menubar.add_cascade(label="Firewall", menu=fw)
 
+        menubar.add_command(label="Settings", command=self._open_settings)
+
         helpm = tk.Menu(menubar, tearoff=0)
         helpm.add_command(label="About", command=self._about)
         menubar.add_cascade(label="Help", menu=helpm)
         self.config(menu=menubar)
+
+    def _open_settings(self) -> None:
+        from .settings_window import SettingsWindow
+        if getattr(self, "_settings_window", None) and \
+                self._settings_window.winfo_exists():
+            self._settings_window.lift()
+            return
+        self._settings_window = SettingsWindow(self, self.monitor)
 
     def _build_statusbar(self) -> None:
         admin = _is_admin()
@@ -211,26 +242,33 @@ class NetPeekierApp(tk.Tk):
     def _refresh(self) -> None:
         procs, totals = self.monitor.snapshot()
         self.var_up_now.set(human_speed(totals.up_now))
-        self.var_down_now.set(human_speed(totals.down_now))
-        self.var_up_peak.set(human_speed(totals.up_peak))
-        self.var_down_peak.set(human_speed(totals.down_peak))
+        unit = self.monitor.settings.speed_unit
+        self.var_up_now.set(human_speed(totals.up_now, unit))
+        self.var_down_now.set(human_speed(totals.down_now, unit))
+        self.var_up_peak.set(human_speed(totals.up_peak, unit))
+        self.var_down_peak.set(human_speed(totals.down_peak, unit))
         self.var_up_total.set(human_bytes(totals.up_total))
         self.var_down_total.set(human_bytes(totals.down_total))
+
+        # reflect the chosen speed unit in the column headers
+        suf = unit_suffix(unit)
+        self.sorter.set_base("up", "Upload" + suf)
+        self.sorter.set_base("down", "Download" + suf)
 
         self._update_tree(procs)
         self.after(REFRESH_MS, self._refresh)
 
     def _update_tree(self, procs: List[ProcStat]) -> None:
+        unit = self.monitor.settings.speed_unit
         # group by process name (svchost.exe -> several PIDs), like NetPeeker
         groups: Dict[str, List[ProcStat]] = {}
         for p in procs:
             groups.setdefault(p.name, []).append(p)
 
         seen: set[str] = set()
-        for name, members in sorted(
-                groups.items(),
-                key=lambda kv: sum(m.up_bps + m.down_bps for m in kv[1]),
-                reverse=True):
+        sortkeys: Dict[str, Dict[str, object]] = {}
+        rowtags: Dict[str, tuple] = {}
+        for name, members in groups.items():
             gid = f"name::{name}"
             up = sum(m.up_bps for m in members)
             down = sum(m.down_bps for m in members)
@@ -238,18 +276,24 @@ class NetPeekierApp(tk.Tk):
             tdown = sum(m.down_total for m in members)
             ports = sorted({pt for m in members for pt in m.listening_ports})
             blocked = any(m.blocked for m in members)
+            gtag = next((m.tag for m in members if m.tag), "")
             tag = "blocked" if blocked else ("active" if (up + down) > 0 else "")
-            vals = (human_speed(up), human_speed(down),
+            vals = (human_speed(up, unit), human_speed(down, unit),
                     human_bytes(tup) if tup else "-",
                     human_bytes(tdown) if tdown else "-",
-                    ports_str(ports))
+                    gtag, ports_str(ports))
+            sortkeys[gid] = {
+                "#0": name.lower(), "up": up, "down": down,
+                "tup": tup, "tdown": tdown, "tag": gtag.lower(),
+                "ports": ports[0] if ports else -1,
+            }
+            rowtags[gid] = (tag,) if tag else ()
 
             if self.tree.exists(gid):
-                self.tree.item(gid, text=name, values=vals,
-                               tags=(tag,) if tag else ())
+                self.tree.item(gid, text=name, values=vals)
             else:
                 self.tree.insert("", "end", iid=gid, text=name, values=vals,
-                                 tags=(tag,) if tag else (), open=False)
+                                 open=False)
             seen.add(gid)
 
             single = len(members) == 1
@@ -259,19 +303,25 @@ class NetPeekierApp(tk.Tk):
                          else f"{name}  (PID {m.pid})")
                 ctag = "blocked" if m.blocked else (
                     "active" if (m.up_bps + m.down_bps) > 0 else "")
-                cvals = (human_speed(m.up_bps), human_speed(m.down_bps),
+                cvals = (human_speed(m.up_bps, unit), human_speed(m.down_bps, unit),
                          human_bytes(m.up_total) if m.up_total else "-",
                          human_bytes(m.down_total) if m.down_total else "-",
-                         ports_str(m.listening_ports))
+                         m.tag, ports_str(m.listening_ports))
+                sortkeys[cid] = {
+                    "#0": label.lower(), "up": m.up_bps, "down": m.down_bps,
+                    "tup": m.up_total, "tdown": m.down_total,
+                    "tag": (m.tag or "").lower(),
+                    "ports": (m.listening_ports[0]
+                              if m.listening_ports else -1),
+                }
+                rowtags[cid] = (ctag,) if ctag else ()
                 if self.tree.exists(cid):
-                    self.tree.item(cid, text=label, values=cvals,
-                                   tags=(ctag,) if ctag else ())
+                    self.tree.item(cid, text=label, values=cvals)
                     if self.tree.parent(cid) != gid:
                         self.tree.move(cid, gid, "end")
                 else:
                     self.tree.insert(gid, "end", iid=cid, text=label,
-                                     values=cvals,
-                                     tags=(ctag,) if ctag else ())
+                                     values=cvals)
                 seen.add(cid)
 
         # delete rows that disappeared
@@ -282,6 +332,10 @@ class NetPeekierApp(tk.Tk):
                 except tk.TclError:
                     pass
         self._known_iids = seen
+        self._sortkeys = sortkeys
+        self._rowtags = rowtags
+        self.sorter.apply()
+        apply_stripes(self.tree, self._rowtags)
 
     # ---- selection helpers ------------------------------------------------
     def _selected_pid(self):
@@ -386,6 +440,73 @@ class NetPeekierApp(tk.Tk):
             self._fw_window.lift()
             return
         self._fw_window = FirewallManagerWindow(self, self.monitor)
+
+    def _end_selected_process(self) -> None:
+        proc = self._selected_proc()
+        if proc is None:
+            return
+        if not messagebox.askyesno(
+                "End Process",
+                f"End {proc.name} (PID {proc.pid})?\n\n"
+                "Unsaved work in that program will be lost."):
+            return
+        try:
+            p = psutil.Process(proc.pid)
+            p.terminate()
+            try:
+                p.wait(timeout=3)
+            except psutil.TimeoutExpired:
+                p.kill()  # force if it didn't go quietly
+        except psutil.NoSuchProcess:
+            pass
+        except (psutil.AccessDenied, PermissionError):
+            messagebox.showerror(
+                "End Process",
+                "Access denied. Try running Net-Peekier as Administrator.")
+        except Exception as exc:
+            messagebox.showerror("End Process", f"Could not end process:\n{exc}")
+
+    def _open_selected_path(self) -> None:
+        proc = self._selected_proc()
+        if proc is None:
+            return
+        if not proc.exe or not os.path.exists(proc.exe):
+            messagebox.showwarning(
+                "Open Program Path",
+                "No executable path is available for this process.\n"
+                "Try running as Administrator.")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                # open the folder with the exe highlighted
+                subprocess.Popen(["explorer", "/select,", proc.exe])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", proc.exe])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(proc.exe)])
+        except Exception as exc:
+            messagebox.showerror("Open Program Path", str(exc))
+
+    def _tag_selected(self) -> None:
+        proc = self._selected_proc()
+        if proc is None:
+            return
+        if not proc.exe:
+            messagebox.showwarning(
+                "Set tag",
+                "No executable path available for this process.\n"
+                "Run as Administrator to resolve it.")
+            return
+        current = self.monitor.settings.exe_tags.get(proc.exe, "")
+        ans = simpledialog.askstring(
+            "Set tag",
+            f"Group tag for {proc.name}\n"
+            "(processes sharing a tag can share a block or speed limit).\n"
+            "Leave blank to remove the tag.",
+            initialvalue=current, parent=self)
+        if ans is None:
+            return
+        self.monitor.set_exe_tag(proc.exe, ans.strip() or None)
 
     def _about(self) -> None:
         messagebox.showinfo(
