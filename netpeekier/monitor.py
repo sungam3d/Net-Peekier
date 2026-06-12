@@ -165,6 +165,26 @@ class Monitor:
         with self._lock:
             return list(self._procs), Totals(**vars(self._totals))
 
+    def restamp_rules(self) -> None:
+        """Recompute the rule-derived fields (blocked / limits / tag) on the
+        CURRENT snapshot from settings, without waiting for the next tick.
+
+        Block/limit/tag state lives in settings and is changed synchronously by
+        the GUI, but ProcStat carries a copy taken at tick time. Re-stamping
+        lets the list reflect a just-applied rule immediately. This only touches
+        derived fields (cheap, settings-only) so it's safe from the GUI thread."""
+        s = self.settings
+        blocked_exes = set(s.blocked_exes)
+        for btag in s.tag_blocked:
+            blocked_exes.update(e for e in s.exes_with_tag(btag) if e)
+        with self._lock:
+            for p in self._procs:
+                exe = p.exe
+                p.blocked = bool(exe) and exe in blocked_exes
+                up, down = (s.exe_limit(exe) if exe else (0, 0))
+                p.up_limit, p.down_limit = up, down
+                p.tag = s.exe_tags.get(exe, "") if exe else ""
+
     def connections_for(self, pid: int) -> List[Connection]:
         with self._lock:
             for p in self._procs:

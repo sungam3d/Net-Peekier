@@ -279,6 +279,7 @@ class NetPeekierApp(tk.Tk):
 
     def _refresh_now(self) -> None:
         try:
+            self.monitor.restamp_rules()      # reflect just-applied rules now
             procs, _ = self.monitor.snapshot()
             self._update_tree(procs)
         except Exception:
@@ -470,6 +471,7 @@ class NetPeekierApp(tk.Tk):
         self.monitor.set_blocked(proc.exe, block)
         if not ok:
             messagebox.showerror("Firewall", msg or "Failed (need admin?).")
+        self._refresh_now()
 
     def _limit_selected(self) -> None:
         proc = self._selected_proc()
@@ -499,6 +501,7 @@ class NetPeekierApp(tk.Tk):
             messagebox.showinfo(
                 "Speed limit",
                 "Limit recorded, but enforcement needs WinDivert installed.")
+        self._refresh_now()
 
     def _open_firewall_manager(self) -> None:
         from .firewall_window import FirewallManagerWindow
@@ -573,6 +576,7 @@ class NetPeekierApp(tk.Tk):
         if ans is None:
             return
         self.monitor.set_exe_tag(proc.exe, ans.strip() or None)
+        self._refresh_now()
 
     def _remove_tag_selected(self) -> None:
         proc = self._selected_proc()
@@ -581,6 +585,7 @@ class NetPeekierApp(tk.Tk):
         if not self.monitor.settings.exe_tags.get(proc.exe):
             return  # nothing to remove
         self.monitor.set_exe_tag(proc.exe, None)
+        self._refresh_now()
 
     def _about(self) -> None:
         messagebox.showinfo(

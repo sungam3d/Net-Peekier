@@ -59,6 +59,9 @@ def init_table(tree) -> None:
                       foreground=[("selected", _SEL_FG)])
 
     tree.bind("<<TreeviewSelect>>", _on_select, add="+")
+    # stash it so apply_stripes() can re-evaluate the selection colour after the
+    # blocked-set changes (e.g. you block the row that's currently selected)
+    tree._np_refresh_selcolor = _on_select  # type: ignore[attr-defined]
     _on_select()
 
 
@@ -95,6 +98,12 @@ def apply_stripes(tree, rowflags: Dict[str, Iterable[str]] | None = None,
                 fg = None
         tree.item(iid, tags=(bg, fg) if fg else (bg,))
         apply_stripes(tree, rowflags, iid, counter)
+    if top:
+        # the blocked set was just rebuilt; refresh the selection colour so a
+        # row that became (un)blocked while selected updates immediately
+        fn = getattr(tree, "_np_refresh_selcolor", None)
+        if fn:
+            fn()
 
 
 # ---- column-width persistence --------------------------------------------

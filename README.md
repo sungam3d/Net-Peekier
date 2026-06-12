@@ -1,5 +1,5 @@
 # Net-Peekier
-#### v1.0.08
+####### v1.0.10
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -93,6 +93,12 @@ limit and path — independent of whether the app is currently running.
   *Upload/Download limit* fields in KB/s (0 = unlimited), and a *Tag* field.
 - **Remove** — clears the block, limit and tag for that app.
 - **Tag rules...** — manage group rules (see Tag groups below).
+
+The manager and the tag-rules window update **live** — any change you make
+(here, from the main list, or to a tag) is reflected immediately, so there's no
+Refresh button to press. On the main list, blocking or limiting a selected row
+also updates its highlight at once (a blocked row's selection turns red without
+needing to click away and back).
 
 Rules are keyed by **executable path**, so they stick to the app across
 restarts rather than to a one-off PID. Blocks are applied through Windows

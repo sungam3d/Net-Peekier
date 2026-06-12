@@ -222,6 +222,14 @@ class FirewallManagerWindow(tk.Toplevel):
         self._refresh()
         from .winutil import center_on_parent
         center_on_parent(self, master)
+        self._auto_refresh()
+
+    def _auto_refresh(self) -> None:
+        """Keep the list in step with rule changes live, no manual refresh."""
+        if not self.winfo_exists():
+            return
+        self._refresh()
+        self.after(1000, self._auto_refresh)
 
     def _close(self) -> None:
         capture_widths(self.tree, "firewall", self.monitor.settings,
@@ -275,8 +283,6 @@ class FirewallManagerWindow(tk.Toplevel):
         tk.Button(bar, text="Tag rules...", command=self._open_tag_rules).pack(
             side="left", padx=10)
         tk.Button(bar, text="Close", command=self._close).pack(
-            side="right", padx=2)
-        tk.Button(bar, text="Refresh", command=self._refresh).pack(
             side="right", padx=2)
 
     def _open_tag_rules(self) -> None:
@@ -471,6 +477,13 @@ class TagRulesWindow(tk.Toplevel):
         self._refresh()
         from .winutil import center_on_parent
         center_on_parent(self, master)
+        self._auto_refresh()
+
+    def _auto_refresh(self) -> None:
+        if not self.winfo_exists():
+            return
+        self._refresh()
+        self.after(1000, self._auto_refresh)
 
     def _close(self) -> None:
         capture_widths(self.tree, "tagrules", self.monitor.settings,

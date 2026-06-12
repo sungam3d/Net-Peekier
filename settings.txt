@@ -1,20 +1,42 @@
 {
   "speed_unit": "auto",
   "packet_purge_minutes": 1,
-  "blocked_exes": [],
+  "blocked_exes": [
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.UserSessionHelper.exe",
+    "C:\\Program Files\\Royal TS V7\\RoyalTS.exe",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\asus_framework.exe",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\dll\\AcPowerNotification\\AcPowerNotification.exe",
+    "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe",
+    "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe",
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.Service.exe"
+  ],
   "exe_limits": {},
-  "exe_tags": {},
-  "tag_limits": {},
-  "tag_blocked": [],
+  "exe_tags": {
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\dll\\AcPowerNotification\\AcPowerNotification.exe": "blocked",
+    "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": "blocked",
+    "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe": "blocked",
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.Service.exe": "blocked",
+    "C:\\Program Files\\ASUS\\Armoury Crate Service\\ArmouryCrate.UserSessionHelper.exe": "blocked",
+    "C:\\Program Files (x86)\\ASUS\\ArmouryDevice\\asus_framework.exe": "blocked"
+  },
+  "tag_limits": {
+    "blocked": [
+      512000,
+      512000
+    ]
+  },
+  "tag_blocked": [
+    "blocked"
+  ],
   "column_widths": {
     "main": {
-      "#0": 210,
-      "up": 94,
-      "down": 117,
-      "tup": 81,
-      "tdown": 97,
-      "tag": 98,
-      "ports": 152
+      "#0": 221,
+      "up": 108,
+      "down": 133,
+      "tup": 93,
+      "tdown": 108,
+      "tag": 109,
+      "ports": 164
     },
     "firewall": {
       "#0": 149,
@@ -49,6 +71,12 @@
       "remote": 167,
       "proto": 87,
       "len": 77
+    },
+    "stats": {
+      "up": 120,
+      "down": 120,
+      "total": 120,
+      "runtime": 120
     }
   },
   "idle_hide_minutes": 1,
