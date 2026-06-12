@@ -1,6 +1,6 @@
 """Net-Peekier entry point.
 
-Run:
+Expects the `netpeekier` package folder alongside this file. Run with:
     python run.py
 
 On Windows, run from an *Administrator* terminal for full visibility and to let
@@ -12,8 +12,8 @@ import sys
 
 
 def main() -> int:
-    from netpeeker.monitor import Monitor
-    from netpeeker.gui.main_window import NetPeekierApp
+    from netpeekier.monitor import Monitor
+    from netpeekier.gui.main_window import NetPeekierApp
 
     monitor = Monitor(interval=1.0)
     monitor.start()

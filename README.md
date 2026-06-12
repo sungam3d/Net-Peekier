@@ -35,8 +35,10 @@ The app auto-detects what's available and tells you in the status bar.
 |---|---|---|
 | Process list, connections, statuses | ✅ | ✅ |
 | Listening ports per app | ✅ | ✅ |
-| Dashboard up/down totals | ✅ (system-wide) | ✅ (sum of processes) |
+| Dashboard up/down speed (now + peak) | ✅ (system-wide) | ✅ (sum of processes) |
+| Dashboard total sent / received | ✅ (system-wide, since start) | ✅ |
 | **Per-process** up/down speed | ❌ | ✅ |
+| **Per-process** total sent / received | ❌ | ✅ |
 | Live packet capture + hex view | ❌ | ✅ |
 | Block app (Windows Firewall) | ✅ (needs admin) | ✅ |
 | Speed limit (throttle) | recorded only | ✅ enforced |
@@ -51,12 +53,15 @@ way:
 
 - a **SNIFF** handle (read-only) measures traffic and captures packets — it can
   never break your connectivity;
-- a separate **enforcer** handle opens *only while* a block/throttle rule is
-  active, putting Python in the data path solely for the apps you chose to
-  control.
+- a separate **enforcer** handle opens *only while* a **speed limit** is active,
+  putting Python in the data path solely to throttle. It is **fail-open**: any
+  error reinjects the packet, so it can never take you offline.
 
-App **blocking** defaults to **Windows Firewall** (`netsh advfirewall`), so the
-block is persistent and never sits in your packet path.
+**Blocking is Windows Firewall only** (`netsh advfirewall`). It is selective and
+kernel-enforced, so a block is persistent and never sits in your packet path.
+This is deliberate: routing *all* traffic through a userspace loop just to drop
+one app's packets would stall every other connection — so blocking never
+touches the enforcer.
 
 ## Firewall & limits manager
 
@@ -87,8 +92,8 @@ divided by the elapsed time to produce live speeds.
 ## Project layout
 
 ```
-run.py                     entry point
-netpeeker/
+run.py                     entry point  (imports the `netpeekier` package)
+netpeekier/
   models.py                dataclasses (Packet, Connection, ProcStat, Totals)
   procmap.py               psutil: processes, connections, ports, endpoint→PID
   capture.py               WinDivert sniff + enforcer + NullBackend fallback
