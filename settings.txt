@@ -1,39 +1,20 @@
 {
-  "speed_unit": "KB/s",
+  "speed_unit": "auto",
   "packet_purge_minutes": 1,
   "blocked_exes": [],
-  "exe_limits": {
-    "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": [
-      512000,
-      512000
-    ],
-    "C:\\Program Files (x86)\\Acronis\\TrueImageHome\\Agent\\aakore.exe": [
-      512000,
-      512000
-    ]
-  },
-  "exe_tags": {
-    "C:\\Program Files\\Royal TS V7\\RoyalTS.exe": "remote desktop",
-    "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe": "remote desktop",
-    "C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe": "net",
-    "C:\\Users\\Magnus\\AppData\\Local\\GitHubDesktop\\app-3.5.12\\GitHubDesktop.exe": "net",
-    "C:\\Program Files (x86)\\Acronis\\TrueImageHome\\Agent\\aakore.exe": "Blocked",
-    "C:\\Program Files (x86)\\Common Files\\Autodesk Shared\\AdskLicensing\\9.0.1.1462\\AdskLicensingService\\AdskLicensingService.exe": "Blocked"
-  },
-  "tag_limits": {
-    "Blocked": [
-      512000,
-      512000
-    ]
-  },
+  "exe_limits": {},
+  "exe_tags": {},
+  "tag_limits": {},
   "tag_blocked": [],
   "column_widths": {
-    "tagrules": {
-      "#0": 134,
-      "members": 69,
-      "blocked": 77,
-      "up": 125,
-      "down": 124
+    "main": {
+      "#0": 210,
+      "up": 94,
+      "down": 117,
+      "tup": 81,
+      "tdown": 97,
+      "tag": 98,
+      "ports": 152
     },
     "firewall": {
       "#0": 149,
@@ -43,6 +24,24 @@
       "tag": 89,
       "path": 249
     },
+    "connections": {
+      "proto": 60,
+      "local": 199,
+      "dir": 48,
+      "remote": 123,
+      "status": 110,
+      "up": 88,
+      "down": 104,
+      "tup": 73,
+      "tdown": 96
+    },
+    "tagrules": {
+      "#0": 134,
+      "members": 69,
+      "blocked": 77,
+      "up": 125,
+      "down": 124
+    },
     "packets": {
       "time": 191,
       "local": 167,
@@ -50,29 +49,9 @@
       "remote": 167,
       "proto": 87,
       "len": 77
-    },
-    "connections": {
-      "proto": 60,
-      "local": 160,
-      "dir": 40,
-      "remote": 170,
-      "status": 110,
-      "up": 85,
-      "down": 85,
-      "tup": 95,
-      "tdown": 96
-    },
-    "main": {
-      "#0": 199,
-      "up": 92,
-      "down": 92,
-      "tup": 99,
-      "tdown": 99,
-      "tag": 94,
-      "ports": 174
     }
   },
-  "idle_hide_minutes": null,
+  "idle_hide_minutes": 1,
   "lan_ranges": [
     "10.0.0.0/8",
     "172.16.0.0/12",

@@ -9,6 +9,7 @@ It owns the ProcessMap and the capture backend, and on each tick:
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -69,8 +70,11 @@ class Monitor:
         try:
             from . import firewall
             for exe in firewall.list_blocked():
-                if exe not in self.settings.blocked_exes:
+                if exe and exe not in self.settings.blocked_exes:
                     self.settings.blocked_exes.append(exe)
+            # drop any empty/garbage entries that may have crept in previously
+            self.settings.blocked_exes = [
+                e for e in self.settings.blocked_exes if e]
         except Exception:
             pass
 
@@ -82,6 +86,13 @@ class Monitor:
         self._last_active: Dict[int, float] = {}    # pid -> monotonic ts
         self._prev_conns: Dict[int, frozenset] = {}  # pid -> conn-key set
         self._lan_nets = self.settings.lan_networks()  # cached parsed ranges
+
+        # rolling activity log (for the Statistics window)
+        from . import paths
+        from .history import HistoryLogger
+        self.history = HistoryLogger(
+            os.path.join(paths.LOG_DIR, "history.jsonl"))
+        self._prev_pid_totals: Dict[int, Tuple[int, int]] = {}
 
         # system-wide fallback counters (used when backend has no per-PID data)
         self._last_io = psutil.net_io_counters()
@@ -128,11 +139,13 @@ class Monitor:
         if sync_firewall:
             try:
                 from . import firewall
-                for exe in list(s.blocked_exes):
-                    firewall.block_app(exe)
+                # Only ever block concrete, valid exe paths. An empty/garbage
+                # path could otherwise become a block-everything firewall rule.
+                to_block = set(e for e in s.blocked_exes if e)
                 for tag in s.tag_blocked:
-                    for exe in s.exes_with_tag(tag):
-                        firewall.block_app(exe)
+                    to_block.update(e for e in s.exes_with_tag(tag) if e)
+                for exe in to_block:
+                    firewall.block_app(exe)   # block_app re-validates too
             except Exception:
                 pass
         s.save()
@@ -142,6 +155,10 @@ class Monitor:
         self.backend.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        try:
+            self.history.flush()
+        except Exception:
+            pass
 
     # ---- snapshot accessors (called from GUI thread) ----------------------
     def snapshot(self) -> Tuple[List[ProcStat], Totals]:
@@ -222,6 +239,8 @@ class Monitor:
         try:
             from . import firewall
             for exe in self.settings.exes_with_tag(tag):
+                if not exe:
+                    continue
                 if blocked:
                     firewall.block_app(exe)
                 elif exe not in self.settings.blocked_exes:
@@ -229,6 +248,19 @@ class Monitor:
         except Exception:
             pass
         self.settings.save()
+
+    def remove_all_firewall_rules(self):
+        """Emergency cleanup: delete every firewall rule this app created and
+        clear our block state. Returns (count, message)."""
+        try:
+            from . import firewall
+            count, msg = firewall.remove_all_rules()
+        except Exception as exc:
+            return 0, f"Could not remove rules: {exc}"
+        self.settings.blocked_exes = []
+        self.settings.tag_blocked = []
+        self.settings.save()
+        return count, msg
 
     def remove_app(self, exe: str) -> None:
         """Fully unmanage an app: drop block, limit and tag, then resync once."""
@@ -415,17 +447,30 @@ class Monitor:
             if not idle:                 # idle processes drop off the list
                 procs.append(ps)
 
+            # --- activity logging: per-exe byte delta since last tick
+            if exe and (tup or tdown):
+                ptup, ptdown = self._prev_pid_totals.get(pid, (0, 0))
+                d_up = tup - ptup if tup >= ptup else tup
+                d_down = tdown - ptdown if tdown >= ptdown else tdown
+                if d_up > 0 or d_down > 0:
+                    self.history.record(exe, ps.name, d_up, d_down)
+            self._prev_pid_totals[pid] = (tup, tdown)
+
         # forget terminated pids everywhere
         if dead_pids:
             for pid in dead_pids:
                 self._last_active.pop(pid, None)
                 self._prev_conns.pop(pid, None)
+                self._prev_pid_totals.pop(pid, None)
             self.backend.forget_pids(dead_pids)
         # also prune activity maps for pids we no longer track at all
         stale = set(self._last_active) - seen_pids - live_pids
         for pid in stale:
             self._last_active.pop(pid, None)
             self._prev_conns.pop(pid, None)
+
+        # write out the rolling activity log every interval
+        self.history.maybe_flush()
 
         # hand the limited apps' ports to the enforcer (narrow divert filter)
         self.backend.set_enforced_ports(enforced_ports)

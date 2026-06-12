@@ -200,6 +200,16 @@ class WinDivertBackend(CaptureBackend):
 
     def stop(self) -> None:
         self._running.clear()
+        # Proactively close the enforcer's divert handle so a thread blocked in
+        # recv() unblocks at once and stops diverting traffic immediately --
+        # otherwise a throttle could briefly outlive the app. (Sniff handle is
+        # closed by its own `with` block when _running clears.)
+        handle = self._enforce_handle
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
         # threads are daemon + WinDivert handles unblock on close; give them a
         # moment to exit cleanly.
         for t in (self._sniff_thread, self._enforce_thread):

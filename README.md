@@ -70,6 +70,15 @@ This is deliberate: routing *all* traffic through a userspace loop just to drop
 one app's packets would stall every other connection — so blocking never
 touches the enforcer.
 
+**Safety:** a firewall rule with no valid program path would block *all*
+traffic and persist after the app closes, so every block is validated first —
+Net-Peekier refuses to create a rule from anything that isn't a concrete,
+absolute path to an `.exe`. Empty or unresolved paths (which can happen for
+protected system processes) are skipped, never turned into a rule. If a block
+ever leaves you stuck, **Firewall ▸ Remove ALL Net-Peekier firewall rules**
+deletes every rule this app created (only those — it matches on our own name
+prefix) and clears the block list.
+
 ## Firewall & limits manager
 
 Open it from **Firewall ▸ Firewall & limits manager** (or right-click an app).
@@ -182,6 +191,23 @@ linger in the list.
 Every window — Detail Information, Captured Packets, the firewall/limits and tag
 managers, Settings, and all dialogs — opens centered over the main window.
 
+## Statistics
+
+**Statistics** in the menu bar opens a graphs window built from a rolling
+activity log. As the tool runs, it appends per-app traffic samples (which app,
+bytes up/down, time) to `log/history.jsonl` every 30 seconds. The window shows:
+
+- a **summary** of total data and up/down for the selected range,
+- **Top apps by data used** (horizontal bars),
+- **By hour of day** (stacked up/down bars across 24 hours),
+- **Traffic over time** (up/down lines),
+- a **Per-app totals** table with uploaded, downloaded, total and active time.
+
+Pick a range (last hour / 24 hours / 7 days / all time), Refresh, Flush now to
+force the latest samples to disk, or Clear log to wipe the history. The charts
+are drawn on plain canvases, so no plotting library is needed. Per-app data is
+only recorded when WinDivert is active (it needs real per-process byte counts).
+
 ## Where files live
 
 Everything Net-Peekier writes stays inside the program folder:
@@ -190,6 +216,7 @@ Everything Net-Peekier writes stays inside the program folder:
 <program root>/settings.txt   options, firewall blocks, per-app limits,
                               tags and tag limits  (JSON inside a .txt)
 <program root>/log/           exported packet logs
+<program root>/log/history.jsonl   rolling activity log for Statistics
 ```
 
 The **only** things outside this folder are OS-level and not files Net-Peekier
@@ -235,7 +262,8 @@ netpeekier/
   models.py                dataclasses (Packet, Connection, ProcStat, Totals)
   procmap.py               psutil: processes, connections, ports, endpoint→PID
   capture.py               WinDivert sniff + scoped enforcer + NullBackend
-  firewall.py              netsh advfirewall block/unblock
+  firewall.py              netsh advfirewall block/unblock (validated, safe)
+  history.py               rolling activity log + aggregation for stats
   monitor.py               background worker: builds the 1/sec snapshot
   util.py                  speed/byte formatting (unit-aware)
   paths.py                 program-root file locations (settings.txt, log/)
@@ -245,6 +273,8 @@ netpeekier/
     connections_window.py  per-process connections ("Detail Information")
     packets_window.py      captured packets + hex dump + export-to-log
     firewall_window.py     firewall/limits manager + tag-group rules
+    stats_window.py        Statistics: traffic graphs + per-app totals
+    charts.py              dependency-free canvas charts (bar/line)
     tag_picker.py          tag chooser (drop-down of existing + free input)
     settings_window.py     speed unit, purge, idle-hide, LAN ranges
     winutil.py             centers child windows over the main window

@@ -235,8 +235,12 @@ class NetPeekierApp(tk.Tk):
                        command=lambda: self._block_selected(False))
         fw.add_command(label="Set speed limit on selected...",
                        command=self._limit_selected)
+        fw.add_separator()
+        fw.add_command(label="Remove ALL Net-Peekier firewall rules...",
+                       command=self._remove_all_firewall_rules)
         menubar.add_cascade(label="Firewall", menu=fw)
 
+        menubar.add_command(label="Statistics", command=self._open_stats)
         menubar.add_command(label="Settings", command=self._open_settings)
 
         helpm = tk.Menu(menubar, tearoff=0)
@@ -251,6 +255,34 @@ class NetPeekierApp(tk.Tk):
             self._settings_window.lift()
             return
         self._settings_window = SettingsWindow(self, self.monitor)
+
+    def _open_stats(self) -> None:
+        from .stats_window import StatsWindow
+        if getattr(self, "_stats_window", None) and \
+                self._stats_window.winfo_exists():
+            self._stats_window.lift()
+            return
+        self._stats_window = StatsWindow(self, self.monitor)
+
+    def _remove_all_firewall_rules(self) -> None:
+        from tkinter import messagebox
+        if not messagebox.askyesno(
+                "Remove all firewall rules",
+                "This deletes every Windows Firewall rule Net-Peekier created "
+                "(all blocks) and clears the block list.\n\n"
+                "Use this if blocking ever leaves traffic stuck. Continue?",
+                parent=self):
+            return
+        count, msg = self.monitor.remove_all_firewall_rules()
+        messagebox.showinfo("Remove all firewall rules", msg, parent=self)
+        self._refresh_now()
+
+    def _refresh_now(self) -> None:
+        try:
+            procs, _ = self.monitor.snapshot()
+            self._update_tree(procs)
+        except Exception:
+            pass
 
     def _build_statusbar(self) -> None:
         admin = _is_admin()
