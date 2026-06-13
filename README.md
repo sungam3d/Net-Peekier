@@ -19,7 +19,7 @@ Dashboard (up/down now + peak + total)
    Settings ▸ Firewall and Tags  (the firewall/limits/tags manager)
             ▸ Preferences        (speed unit, purge, idle-hide, LAN ranges)
 ```
-| <img src="Preview/Net-Peeker-01.jpg" alt="Program Layout Preview" width="1000"> |
+<img src="Preview/Net-Peeker-01.jpg" alt="Program Layout Preview" width=100%>
 
 ## Quick start
 
