@@ -1,5 +1,5 @@
 # Net-Peekier
-##### v1.0.14
+##### v1.0.16
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -100,7 +100,11 @@ What's available depends on what's installed:
   `pip install nvidia-ml-py` for GPU temp/clock/load.
 - Anything unavailable shows a dash (`--`) and never blocks the app — the same
   graceful-degradation approach as WinDivert. **RAM clock and RAM temperature
-  are unavailable on most machines** (no sensor), so expect dashes there.
+  are usually unavailable** — most boards expose no live memory-clock sensor,
+  and RAM thermal sensors exist mainly on DDR5 (and some DDR4) modules, so on
+  many machines these stay dashes no matter which library you use. The app
+  prefers a correctly-named package/Tctl CPU sensor and ignores 0 °C placeholder
+  readings, so CPU temp shows the real value (or a dash) rather than 0.
 
 The numbers are polled on a background thread (so slow sensor reads never stall
 the UI) and the dashboard values are fixed-width, so they don't shuffle the

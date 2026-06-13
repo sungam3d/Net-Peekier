@@ -45,6 +45,37 @@ def _fmt(value, suffix, decimals=0):
     return f"{value:.0f}{suffix}"
 
 
+def _pick(named: dict, prefer=()):
+    """Choose a value from {name: value}. Prefer a sensor whose name contains
+    one of `prefer` (in order); otherwise return the max (the headline figure)."""
+    if not named:
+        return None
+    for key in prefer:
+        for name, val in named.items():
+            if key in name:
+                return val
+    return max(named.values())
+
+
+def _pick_temp(named: dict, prefer=(), avoid=()):
+    """Like _pick but for temperatures: drop obviously-bogus readings (<=0 or
+    absurdly high) so a 0 °C placeholder sensor never wins, and skip names in
+    `avoid` (e.g. GPU hotspot) when a better one exists."""
+    good = {n: v for n, v in named.items() if v is not None and 0 < v < 150}
+    if not good:
+        return None
+    if avoid:
+        filtered = {n: v for n, v in good.items()
+                    if not any(a in n for a in avoid)}
+        if filtered:
+            good = filtered
+    for key in prefer:
+        for name, val in good.items():
+            if key in name:
+                return val
+    return max(good.values())
+
+
 class SystemMonitor:
     """Polls system sensors on a background thread so the GUI just reads the
     latest snapshot. Sensor reads (especially the .NET temp library) can be
@@ -153,6 +184,14 @@ class SystemMonitor:
         except Exception:
             return
         try:
+            # collect candidate sensors, then choose the best per metric
+            cpu_temps = {}   # name -> value
+            gpu_temps = {}
+            mem_temps = {}
+            cpu_clocks = []
+            gpu_clocks = {}
+            gpu_loads = {}
+            mem_clocks = {}
             for hw in self._hw.Hardware:
                 hw.Update()
                 for sub in hw.SubHardware:
@@ -165,23 +204,35 @@ class SystemMonitor:
                     val = sensor.Value
                     if val is None:
                         continue
+                    val = float(val)
                     st = sensor.SensorType
                     name = (sensor.Name or "").lower()
                     if st == SensorType.Temperature:
-                        if is_cpu and s.cpu_temp is None:
-                            s.cpu_temp = float(val)
-                        elif is_gpu and s.gpu_temp is None and "hot" not in name:
-                            s.gpu_temp = float(val)
-                        elif is_mem and s.ram_temp is None:
-                            s.ram_temp = float(val)
+                        if is_cpu:
+                            cpu_temps[name] = val
+                        elif is_gpu:
+                            gpu_temps[name] = val
+                        elif is_mem:
+                            mem_temps[name] = val
                     elif st == SensorType.Load:
-                        if is_gpu and "core" in name and s.gpu_load is None:
-                            s.gpu_load = float(val)
+                        if is_gpu:
+                            gpu_loads[name] = val
                     elif st == SensorType.Clock:
-                        if is_gpu and "core" in name and s.gpu_clock is None:
-                            s.gpu_clock = float(val)
-                        elif is_mem and s.ram_clock is None and "memory" in name:
-                            s.ram_clock = float(val)
+                        if is_cpu:
+                            cpu_clocks.append(val)
+                        elif is_gpu:
+                            gpu_clocks[name] = val
+                        elif is_mem:
+                            mem_clocks[name] = val
+
+            s.cpu_temp = _pick_temp(
+                cpu_temps, prefer=("package", "tctl", "tdie", "ccd", "core max"))
+            s.gpu_temp = _pick_temp(
+                gpu_temps, prefer=("core", "gpu", "edge"), avoid=("hot", "junction"))
+            s.ram_temp = _pick_temp(mem_temps, prefer=("memory", "dimm", "module"))
+            s.gpu_clock = _pick(gpu_clocks, prefer=("core", "gpu"))
+            s.gpu_load = _pick(gpu_loads, prefer=("core", "gpu"))
+            s.ram_clock = _pick(mem_clocks, prefer=("memory", "clock"))
         except Exception:
             pass
 

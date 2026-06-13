@@ -240,18 +240,21 @@ class NetPeekierApp(tk.Tk):
                    self.var_up_total, "#ffb454")
         down = block(bar, "DOWNLOAD", self.var_down_now, self.var_down_peak,
                      self.var_down_total, "#7fe3ff")
-        up.pack(side="left", padx=(16, 10), pady=6)
+        # System tucks hard to the right; Upload and Download share the rest
+        # equally so they stay centred in their halves.
+        self._build_sysstats(bar)                              # packs right
+        tk.Frame(bar, bg="#1d3a4d", width=2).pack(side="right", fill="y",
+                                                  pady=8)
+        up.pack(side="left", expand=True, pady=6)
         tk.Frame(bar, bg="#1d3a4d", width=2).pack(side="left", fill="y", pady=8)
-        down.pack(side="left", padx=(10, 10), pady=6)
-        tk.Frame(bar, bg="#1d3a4d", width=2).pack(side="left", fill="y", pady=8)
-        self._build_sysstats(bar)
+        down.pack(side="left", expand=True, pady=6)
 
     def _build_sysstats(self, parent) -> None:
         """Third dashboard column: CPU / GPU / RAM load, clock and temperature.
         Values that aren't available (e.g. temps without the optional sensor
         library) show as a dash and never jump the layout (fixed widths)."""
         f = tk.Frame(parent, bg="#10212e")
-        f.pack(side="left", expand=True, fill="x", padx=(14, 16), pady=6)
+        f.pack(side="right", padx=(14, 16), pady=6)
 
         tk.Label(f, text="SYSTEM", bg="#10212e", fg="#5a93ad",
                  font=("Segoe UI", 8, "bold")).grid(

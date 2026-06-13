@@ -422,8 +422,9 @@ class FirewallManagerWindow(tk.Toplevel):
     def _edit(self) -> None:
         exe = self._selected_exe()
         if not exe:
-            messagebox.showinfo("Firewall and Tags",
-                                "Select an app first.", parent=self)
+            from .winutil import centered_message
+            centered_message(self, "info", "Firewall and Tags",
+                             "Select an app first.")
             return
         self._edit_exe(exe)
 
@@ -573,8 +574,9 @@ class TagRulesWindow(tk.Toplevel):
     def _edit(self) -> None:
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Tag rules", "Select a tag rule to edit, or "
-                                "use 'Add rule...'.", parent=self)
+            from .winutil import centered_message
+            centered_message(self, "info", "Tag rules",
+                             "Select a tag rule to edit, or use 'Add rule...'.")
             return
         self._edit_tag(sel[0])
 
