@@ -40,7 +40,8 @@ class PacketsWindow(tk.Toplevel):
         self.monitor = monitor
         self.conn_key = conn_key
         self.title(f"Captured Packets - {title}")
-        self.geometry("760x620")
+        from .winutil import restore_geometry
+        restore_geometry(self, self.monitor.settings, "packets", "760x620")
 
         self._packets: List[Packet] = []
         self._paused = tk.BooleanVar(value=False)
@@ -51,11 +52,15 @@ class PacketsWindow(tk.Toplevel):
 
         restore_widths(self.tree, "packets", self.monitor.settings, _PCOLS)
         self.protocol("WM_DELETE_WINDOW", self._close)
-        from .winutil import center_on_parent
-        center_on_parent(self, master)
+        # only center if we don't have a remembered position
+        if not self.monitor.settings.window_geometry_for("packets"):
+            from .winutil import center_on_parent
+            center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
 
     def _close(self) -> None:
+        from .winutil import save_geometry
+        save_geometry(self, self.monitor.settings, "packets")
         capture_widths(self.tree, "packets", self.monitor.settings, _PCOLS)
         self.destroy()
 

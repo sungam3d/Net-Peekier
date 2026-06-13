@@ -2,6 +2,43 @@
 from __future__ import annotations
 
 
+def restore_geometry(win, settings, key: str, default_size: str) -> None:
+    """Restore a saved 'WxH+X+Y' geometry for a child window, falling back to
+    `default_size`. Guards against off-screen or nonsense values so a window can
+    never open somewhere you can't see it. Mirrors the main window's behaviour so
+    a window's saved size stays in step with its saved column widths."""
+    geo = (settings.window_geometry_for(key)
+           if hasattr(settings, "window_geometry_for") else None)
+    if not geo:
+        win.geometry(default_size)
+        return
+    try:
+        size_part = geo.split("+")[0].split("-")[0]
+        w_str, h_str = size_part.lower().split("x")
+        w, h = int(w_str), int(h_str)
+        if w < 300 or h < 200 or w > 20000 or h > 20000:
+            win.geometry(default_size)
+            return
+        win.geometry(geo)
+        win.update_idletasks()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        x, y = win.winfo_x(), win.winfo_y()
+        if x < -50 or y < -10 or x > sw - 80 or y > sh - 80:
+            win.geometry(f"{w}x{h}")
+    except Exception:
+        win.geometry(default_size)
+
+
+def save_geometry(win, settings, key: str) -> None:
+    """Persist a child window's current geometry under `key` (skips if
+    maximized so we restore a sensible size next time)."""
+    try:
+        if win.state() == "normal" and hasattr(settings, "set_window_geometry"):
+            settings.set_window_geometry(key, win.geometry())
+    except Exception:
+        pass
+
+
 def center_on_parent(win, parent) -> None:
     """Position `win` centered over `parent`. Call after the window's widgets
     are built so its requested size is known."""

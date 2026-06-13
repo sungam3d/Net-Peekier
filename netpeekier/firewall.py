@@ -23,6 +23,7 @@ from typing import List, Tuple
 RULE_PREFIX = "NetPeekier"
 _MARKER = f"{RULE_PREFIX} block "
 _IP_MARKER = f"{RULE_PREFIX} ip "        # per-IP allow/block rules
+_WL_MARKER = f"{RULE_PREFIX} wl "        # whitelist (block-the-rest) rules
 
 
 def _is_windows() -> bool:
@@ -283,15 +284,58 @@ def remove_ip_rule(exe: str, action: str, direction: str, remote_ip: str,
 
 
 def remove_all_ip_rules() -> int:
-    """Delete every per-IP rule we created (matched by our IP marker)."""
+    """Delete every per-IP rule we created (matched by our IP or WL markers)."""
     rc, out = _run([
         "netsh", "advfirewall", "firewall", "show", "rule", "name=all"])
     if rc != 0:
         return 0
     names = set()
     for line in out.splitlines():
-        if _IP_MARKER in line:
-            idx = line.find(_IP_MARKER)
+        for marker in (_IP_MARKER, _WL_MARKER):
+            if marker in line:
+                idx = line.find(marker)
+                names.add(line[idx:].strip())
+    removed = 0
+    for name in names:
+        r2, _o = _run([
+            "netsh", "advfirewall", "firewall", "delete", "rule",
+            f"name={name}"])
+        if r2 == 0:
+            removed += 1
+    return removed
+
+
+# ---------------------------------------------------------------------------
+# Whitelist (allow-only) enforcement.
+#
+# Windows Firewall evaluates BLOCK before ALLOW, so "allow only X" cannot be
+# done with allow rules. Instead we compute everything EXCEPT the allowed
+# endpoints and BLOCK that -- scoped to the program. Adding another allowed
+# endpoint just recomputes the complement. All rules are scoped to program=exe,
+# so the blast radius is always that one app, never the whole machine.
+# ---------------------------------------------------------------------------
+def _wl_id(exe: str) -> str:
+    return hashlib.sha1(exe.lower().encode("utf-8", "ignore")).hexdigest()[:12]
+
+
+def _wl_name(wid: str, idx: int) -> str:
+    return f"{_WL_MARKER}{wid} {idx}"
+
+
+def remove_whitelist(exe: str) -> int:
+    """Remove all whitelist block rules for one exe (by its id in the name)."""
+    if not exe:
+        return 0
+    wid = _wl_id(exe.strip().strip('"'))
+    rc, out = _run([
+        "netsh", "advfirewall", "firewall", "show", "rule", "name=all"])
+    if rc != 0:
+        return 0
+    token = f"{_WL_MARKER}{wid} "
+    names = set()
+    for line in out.splitlines():
+        if token in line:
+            idx = line.find(_WL_MARKER)
             names.add(line[idx:].strip())
     removed = 0
     for name in names:
@@ -301,6 +345,86 @@ def remove_all_ip_rules() -> int:
         if r2 == 0:
             removed += 1
     return removed
+
+
+def set_whitelist(exe: str, allow_entries: list) -> Tuple[bool, str]:
+    """Restrict `exe` to ONLY the allowed endpoints by blocking the complement.
+
+    allow_entries: list of dicts {remote_ip, ports, direction, protocol}.
+    Re-applied wholesale: existing whitelist rules for this exe are cleared
+    first, so this is also how you update or clear (empty list) a whitelist.
+    """
+    from . import ipcalc
+    if not _valid_exe(exe):
+        return False, f"Refusing: not a valid executable path ({exe!r})."
+    exe = exe.strip().strip('"')
+    remove_whitelist(exe)
+    if not allow_entries:
+        return True, "Whitelist cleared."
+    wid = _wl_id(exe)
+    idx = 0
+    ok, msgs = True, []
+
+    def emit(direction, **extra):
+        nonlocal idx, ok
+        args = [
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={_wl_name(wid, idx)}", f"dir={direction}", "action=block",
+            f"program={exe}", "enable=yes", "profile=any",
+        ]
+        for k, v in extra.items():
+            args.append(f"{k}={v}")
+        idx += 1
+        rc, out = _run(args)
+        if rc != 0:
+            ok = False
+            msgs.append(out.strip())
+
+    for direction in ("in", "out"):
+        ents = [e for e in allow_entries
+                if (e.get("direction") or "out") in (direction, "both")]
+        if not ents:
+            continue
+        allowed_ips = [e.get("remote_ip", "") for e in ents
+                       if e.get("remote_ip")]
+        v4_ranges, v6_ranges = ipcalc.block_ranges_except(allowed_ips)
+        # Block every IP that isn't allowed (v4 and v6 as separate rules so a
+        # quirk in one family can't drop the other). Guard: never emit a block
+        # rule with an empty remoteip (that would block the whole app).
+        for ranges in (v4_ranges, v6_ranges):
+            for group in _chunk(ranges, 80):
+                if group:
+                    emit(direction, remoteip=",".join(group))
+        # For allowed IPs that are restricted to certain ports, block that IP
+        # on all OTHER ports (per protocol, since ports require tcp/udp).
+        ports_by_ip: dict = {}
+        full_ip: set = set()
+        for e in ents:
+            ip = (e.get("remote_ip") or "").strip()
+            if not ip or ip.lower() in ("any", "*"):
+                continue
+            if not e.get("ports"):
+                full_ip.add(ip)            # this IP is open on all ports
+            else:
+                ports_by_ip.setdefault(ip, set())
+                for part in str(e["ports"]).split(","):
+                    if part.strip():
+                        ports_by_ip[ip].add(part.strip())
+        for ip, ports in ports_by_ip.items():
+            if ip in full_ip:
+                continue   # another rule opens all ports for this IP
+            comp = ipcalc.complement_ports(",".join(sorted(ports)))
+            if not comp:
+                continue
+            for proto in ("tcp", "udp"):
+                emit(direction, remoteip=ip, remoteport=comp, protocol=proto)
+    return ok, ("\n".join(msgs) if msgs else "Whitelist applied.")
+
+
+def _chunk(seq, n):
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
 
 
 def remove_all_rules() -> Tuple[int, str]:

@@ -49,6 +49,8 @@ class Settings:
     column_widths: Dict[str, Dict[str, int]] = field(default_factory=dict)
     # remembered main-window geometry string, e.g. "880x560+100+50"
     window_geometry: Optional[str] = None
+    # remembered geometry per child window key, e.g. {"packets": "760x620+..."}
+    window_geometries: Dict[str, str] = field(default_factory=dict)
     # hide processes idle (no internet activity) for this many minutes; None=off
     idle_hide_minutes: Optional[int] = None
     # LAN address ranges (CIDR). Remotes outside these are WAN/internet.
@@ -89,6 +91,14 @@ class Settings:
 
     def ip_rules_for(self, exe: str) -> List[dict]:
         return [r for r in self.ip_rules if r.get("exe") == exe]
+
+    def window_geometry_for(self, key: str) -> Optional[str]:
+        return self.window_geometries.get(key)
+
+    def set_window_geometry(self, key: str, geo: str) -> None:
+        if key and geo:
+            self.window_geometries[key] = geo
+            self.save()
 
     def is_allowed_exe(self, exe: str) -> bool:
         """True if this exe is on the permanent allow list, directly or via an
@@ -140,6 +150,9 @@ class Settings:
                                for k, v in cw.items()}
             wg = data.get("window_geometry")
             s.window_geometry = str(wg) if wg else None
+            wgs = data.get("window_geometries", {})
+            s.window_geometries = {str(k): str(v) for k, v in wgs.items()
+                                   if isinstance(v, str)}
             ihm = data.get("idle_hide_minutes")
             s.idle_hide_minutes = int(ihm) if ihm not in (None, "") else None
             lr = data.get("lan_ranges")
@@ -172,6 +185,7 @@ class Settings:
                     "tag_blocked": self.tag_blocked,
                     "column_widths": self.column_widths,
                     "window_geometry": self.window_geometry,
+                    "window_geometries": self.window_geometries,
                     "idle_hide_minutes": self.idle_hide_minutes,
                     "lan_ranges": self.lan_ranges,
                     "show_lan": self.show_lan,

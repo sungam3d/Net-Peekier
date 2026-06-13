@@ -675,160 +675,9 @@ class FirewallManagerWindow(tk.Toplevel):
         self._refresh()
 
 
-class TagRulesWindow(tk.Toplevel):
-    """Manage per-tag group rules: an aggregate block or speed limit shared by
-    every process carrying that tag. The limit is a single bucket the tagged
-    apps draw from together, so their combined throughput stays under the cap.
-    """
-
-    def __init__(self, master, monitor: Monitor) -> None:
-        super().__init__(master)
-        self.monitor = monitor
-        self.title("Net-Peekier - Tag group rules")
-        self.geometry("560x360")
-        self.transient(master)
-
-        frame = tk.Frame(self)
-        frame.pack(side="top", fill="both", expand=True, padx=6, pady=6)
-        cols = ("members", "blocked", "up", "down")
-        self.tree = ttk.Treeview(frame, columns=cols, show="tree headings")
-        self.tree.heading("#0", text="Tag")
-        self.tree.heading("members", text="Apps")
-        self.tree.heading("blocked", text="Blocked")
-        self.tree.heading("up", text="Upload limit")
-        self.tree.heading("down", text="Download limit")
-        self.tree.column("#0", width=120, anchor="w")
-        self.tree.column("members", width=55, anchor="center")
-        self.tree.column("blocked", width=62, anchor="center")
-        self.tree.column("up", width=110, anchor="e")
-        self.tree.column("down", width=110, anchor="e")
-        init_table(self.tree)
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        self._tcols = ("#0", "members", "blocked", "up", "down")
-        restore_widths(self.tree, "tagrules", self.monitor.settings,
-                       self._tcols)
-        self.protocol("WM_DELETE_WINDOW", self._close)
-        frame.rowconfigure(0, weight=1)
-        frame.columnconfigure(0, weight=1)
-        self.tree.tag_configure("blocked", foreground="#b00000")
-        self.tree.bind("<Double-1>", lambda _e: self._edit())
-
-        bar = tk.Frame(self)
-        bar.pack(side="bottom", fill="x", padx=6, pady=(0, 8))
-        tk.Label(bar, fg="#666",
-                 text="Only tags with a rule are listed. Tag processes from the "
-                      "main list (right-click > Set tag).",
-                 wraplength=300, justify="left").pack(side="left", padx=4)
-        tk.Button(bar, text="Add rule...", command=self._add_rule).pack(
-            side="left", padx=2)
-        tk.Button(bar, text="Edit...", command=self._edit).pack(
-            side="left", padx=2)
-        tk.Button(bar, text="Remove rule", command=self._remove_rule).pack(
-            side="left", padx=2)
-        tk.Button(bar, text="Close", command=self._close).pack(
-            side="right", padx=2)
-
-        self._refresh()
-        from .winutil import center_on_parent
-        center_on_parent(self, master)
-        self._auto_refresh()
-
-    def _auto_refresh(self) -> None:
-        if not self.winfo_exists():
-            return
-        self._refresh()
-        self.after(1000, self._auto_refresh)
-
-    def _close(self) -> None:
-        capture_widths(self.tree, "tagrules", self.monitor.settings,
-                       self._tcols)
-        self.destroy()
-
-    def _refresh(self) -> None:
-        if not self.winfo_exists():
-            return
-        sel = self.tree.selection()
-        keep = sel[0] if sel else None
-        self.tree.delete(*self.tree.get_children())
-        s = self.monitor.settings
-        rowtags = {}
-        # Only tags that actually HAVE a rule (a limit or a block) are shown.
-        ruled = sorted(set(s.tag_limits) | set(s.tag_blocked))
-        for tag in ruled:
-            up, down = s.tag_limit(tag)
-            blocked = tag in s.tag_blocked
-            members = len(s.exes_with_tag(tag))
-            self.tree.insert(
-                "", "end", iid=tag, text=tag,
-                values=(members, "Yes" if blocked else "No",
-                        _fmt_limit(up), _fmt_limit(down)))
-            rowtags[tag] = ("blocked",) if blocked else ()
-        apply_stripes(self.tree, rowtags)
-        if keep and self.tree.exists(keep):
-            self.tree.selection_set(keep)
-
-    def _add_rule(self) -> None:
-        from .tag_picker import ask_tag
-        s = self.monitor.settings
-        # tags you can add a rule for = assigned tags that don't have one yet
-        candidates = [t for t in s.all_tags()
-                      if t not in s.tag_limits and t not in s.tag_blocked]
-        if not candidates and not s.exe_tags:
-            messagebox.showinfo(
-                "Add tag rule",
-                "No tags yet. Assign a tag to some processes first\n"
-                "(main list > right-click > Set tag).", parent=self)
-            return
-        tag = ask_tag(self, "Add tag rule",
-                      "Choose a tag to add a block or speed limit for.",
-                      existing=candidates or s.all_tags())
-        if not tag:
-            return
-        self._edit_tag(tag)
-
-    def _edit(self) -> None:
-        sel = self.tree.selection()
-        if not sel:
-            from .winutil import centered_message
-            centered_message(self, "info", "Tag rules",
-                             "Select a tag rule to edit, or use 'Add rule...'.")
-            return
-        self._edit_tag(sel[0])
-
-    def _edit_tag(self, tag: str) -> None:
-        s = self.monitor.settings
-        up, down = s.tag_limit(tag)
-        blocked = tag in s.tag_blocked
-        dlg = _TagDialog(self, tag, blocked, up, down)
-        self.wait_window(dlg)
-        if dlg.result is None:
-            return
-        new_blocked, new_up, new_down = dlg.result
-        self.monitor.set_tag_limit(tag, new_up, new_down)
-        self.monitor.set_tag_blocked(tag, new_blocked)
-        self._refresh()
-
-    def _remove_rule(self) -> None:
-        sel = self.tree.selection()
-        if not sel:
-            return
-        tag = sel[0]
-        if not messagebox.askyesno(
-                "Remove tag rule",
-                f"Remove the block/limit rule for tag '{tag}'?\n\n"
-                "(Processes keep the tag; only the group rule is removed.)",
-                parent=self):
-            return
-        self.monitor.set_tag_limit(tag, 0, 0)
-        self.monitor.set_tag_blocked(tag, False)
-        self._refresh()
-
-
 class _TagDialog(tk.Toplevel):
-    def __init__(self, master, tag, blocked, up_bps, down_bps) -> None:
+    def __init__(self, master, tag, blocked, up_bps, down_bps,
+                 allowed=False) -> None:
         super().__init__(master)
         self.title(f"Tag rule - {tag}")
         self.resizable(False, False)
@@ -841,22 +690,29 @@ class _TagDialog(tk.Toplevel):
             row=0, column=0, columnspan=2, sticky="w", **pad)
         self.var_block = tk.BooleanVar(value=blocked)
         tk.Checkbutton(self, text="Block all apps with this tag (firewall)",
-                       variable=self.var_block).grid(
+                       variable=self.var_block,
+                       command=self._block_changed).grid(
             row=1, column=0, columnspan=2, sticky="w", **pad)
+        self.var_allow = tk.BooleanVar(value=allowed)
+        tk.Checkbutton(self,
+                       text="Allow all apps with this tag (Lockdown allow-list)",
+                       variable=self.var_allow,
+                       command=self._allow_changed).grid(
+            row=2, column=0, columnspan=2, sticky="w", **pad)
         tk.Label(self, text="Group upload limit (KB/s, 0 = unlimited):").grid(
-            row=2, column=0, sticky="w", **pad)
+            row=3, column=0, sticky="w", **pad)
         self.var_up = tk.StringVar(value=str(up_bps // 1024 if up_bps else 0))
         tk.Entry(self, textvariable=self.var_up, width=10).grid(
-            row=2, column=1, sticky="w", **pad)
+            row=3, column=1, sticky="w", **pad)
         tk.Label(self, text="Group download limit (KB/s, 0 = unlimited):").grid(
-            row=3, column=0, sticky="w", **pad)
+            row=4, column=0, sticky="w", **pad)
         self.var_down = tk.StringVar(
             value=str(down_bps // 1024 if down_bps else 0))
         tk.Entry(self, textvariable=self.var_down, width=10).grid(
-            row=3, column=1, sticky="w", **pad)
+            row=4, column=1, sticky="w", **pad)
 
         btns = tk.Frame(self)
-        btns.grid(row=4, column=0, columnspan=2, pady=(6, 8))
+        btns.grid(row=5, column=0, columnspan=2, pady=(6, 8))
         tk.Button(btns, text="OK", width=10, command=self._ok).pack(
             side="left", padx=4)
         tk.Button(btns, text="Cancel", width=10, command=self.destroy).pack(
@@ -865,6 +721,14 @@ class _TagDialog(tk.Toplevel):
         from .winutil import center_on_parent
         center_on_parent(self, master)
         self.grab_set()
+
+    def _block_changed(self) -> None:
+        if self.var_block.get():
+            self.var_allow.set(False)
+
+    def _allow_changed(self) -> None:
+        if self.var_allow.get():
+            self.var_block.set(False)
 
     def _ok(self) -> None:
         try:
@@ -877,7 +741,8 @@ class _TagDialog(tk.Toplevel):
                                  "Limits must be whole numbers >= 0.",
                                  parent=self)
             return
-        self.result = (self.var_block.get(), up * 1024, down * 1024)
+        self.result = (self.var_block.get(), up * 1024, down * 1024,
+                       self.var_allow.get())
         self.destroy()
 
 
@@ -888,18 +753,20 @@ class TagRulesPanel(tk.Frame):
     def __init__(self, master, monitor: Monitor) -> None:
         super().__init__(master)
         self.monitor = monitor
-        cols = ("members", "blocked", "up", "down")
+        cols = ("members", "blocked", "allowed", "up", "down")
         self.tree = ttk.Treeview(self, columns=cols, show="tree headings")
         self.tree.heading("#0", text="Tag")
         self.tree.heading("members", text="Apps")
         self.tree.heading("blocked", text="Blocked")
+        self.tree.heading("allowed", text="Allowed")
         self.tree.heading("up", text="Upload limit")
         self.tree.heading("down", text="Download limit")
-        self.tree.column("#0", width=120, anchor="w")
-        self.tree.column("members", width=55, anchor="center")
-        self.tree.column("blocked", width=62, anchor="center")
-        self.tree.column("up", width=110, anchor="e")
-        self.tree.column("down", width=110, anchor="e")
+        self.tree.column("#0", width=110, anchor="w")
+        self.tree.column("members", width=50, anchor="center")
+        self.tree.column("blocked", width=58, anchor="center")
+        self.tree.column("allowed", width=60, anchor="center")
+        self.tree.column("up", width=105, anchor="e")
+        self.tree.column("down", width=105, anchor="e")
         init_table(self.tree)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -916,13 +783,16 @@ class TagRulesPanel(tk.Frame):
         self.tree.delete(*self.tree.get_children())
         s = self.monitor.settings
         rowtags = {}
-        ruled = sorted(set(s.tag_limits) | set(s.tag_blocked))
+        ruled = sorted(set(s.tag_limits) | set(s.tag_blocked)
+                       | set(s.tag_allowed))
         for tag in ruled:
             up, down = s.tag_limit(tag)
             blocked = tag in s.tag_blocked
+            allowed = tag in s.tag_allowed
             members = len(s.exes_with_tag(tag))
             self.tree.insert("", "end", iid=tag, text=tag,
                              values=(members, "Yes" if blocked else "No",
+                                     "Yes" if allowed else "No",
                                      _fmt_limit(up), _fmt_limit(down)))
             rowtags[tag] = ("blocked",) if blocked else ()
         apply_stripes(self.tree, rowtags)
@@ -933,7 +803,8 @@ class TagRulesPanel(tk.Frame):
         from .tag_picker import ask_tag
         s = self.monitor.settings
         candidates = [t for t in s.all_tags()
-                      if t not in s.tag_limits and t not in s.tag_blocked]
+                      if t not in s.tag_limits and t not in s.tag_blocked
+                      and t not in s.tag_allowed]
         if not candidates and not s.exe_tags:
             from .winutil import centered_message
             centered_message(self, "info", "Add tag rule",
@@ -941,7 +812,7 @@ class TagRulesPanel(tk.Frame):
                              "(main list > right-click > Set tag).")
             return
         tag = ask_tag(self, "Add tag rule",
-                      "Choose a tag to add a block or speed limit for.",
+                      "Choose a tag to add a block, allow or speed limit for.",
                       existing=candidates or s.all_tags())
         if tag:
             self._edit_tag(tag)
@@ -958,13 +829,15 @@ class TagRulesPanel(tk.Frame):
     def _edit_tag(self, tag: str) -> None:
         s = self.monitor.settings
         up, down = s.tag_limit(tag)
-        dlg = _TagDialog(self, tag, tag in s.tag_blocked, up, down)
+        dlg = _TagDialog(self, tag, tag in s.tag_blocked, up, down,
+                         allowed=tag in s.tag_allowed)
         self.wait_window(dlg)
         if dlg.result is None:
             return
-        new_blocked, new_up, new_down = dlg.result
+        new_blocked, new_up, new_down, new_allow = dlg.result
         self.monitor.set_tag_limit(tag, new_up, new_down)
         self.monitor.set_tag_blocked(tag, new_blocked)
+        self.monitor.set_tag_allowed(tag, new_allow and not new_blocked)
         self.refresh()
 
     def remove_selected(self) -> None:
@@ -1050,9 +923,10 @@ class IPRuleDialog(tk.Toplevel):
 
         tk.Label(self, fg="#806000", wraplength=360, justify="left",
                  font=("Segoe UI", 8),
-                 text="Note: Windows Firewall evaluates BLOCK before ALLOW, so "
-                      "an allow rule can't override a full app block. Use allow "
-                      "rules to restrict an open app to certain destinations.").grid(
+                 text="Allow = whitelist: the app is restricted to its allowed "
+                      "endpoints by blocking everything else (added rules are "
+                      "combined). Block = an explicit block of this destination "
+                      "for an otherwise-open app.").grid(
             row=8, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 0))
 
         btns = tk.Frame(self)

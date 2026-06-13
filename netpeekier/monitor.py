@@ -170,13 +170,21 @@ class Monitor:
                         to_block.update(e for e in s.exes_with_tag(tag) if e)
                     for exe in to_block:
                         firewall.block_app(exe)   # block_app re-validates too
-                    # re-apply per-IP rules
+                    # re-apply per-IP rules: block rules directly, allow rules
+                    # via the recomputed per-exe whitelist (block-the-rest)
                     firewall.remove_all_ip_rules()
                     for r in s.ip_rules:
-                        firewall.add_ip_rule(
-                            r.get("exe", ""), r.get("action", ""),
-                            r.get("direction", ""), r.get("remote_ip", ""),
-                            r.get("ports", ""), r.get("protocol", "any"))
+                        if r.get("action") == "block":
+                            firewall.add_ip_rule(
+                                r.get("exe", ""), "block",
+                                r.get("direction", ""), r.get("remote_ip", ""),
+                                r.get("ports", ""), r.get("protocol", "any"))
+                    for exe in {r.get("exe", "") for r in s.ip_rules
+                                if r.get("action") == "allow"}:
+                        entries = [r for r in s.ip_rules
+                                   if r.get("exe") == exe
+                                   and r.get("action") == "allow"]
+                        firewall.set_whitelist(exe, entries)
                 else:
                     # master switch is off: make sure none of our rules linger
                     firewall.remove_all_rules()
@@ -338,33 +346,52 @@ class Monitor:
     def add_ip_rule(self, exe: str, action: str, direction: str,
                     remote_ip: str, ports: str = "",
                     protocol: str = "any") -> tuple:
-        """Add a per-IP firewall rule for an exe and persist it. Returns
-        (ok, message)."""
+        """Add a per-IP firewall rule and persist it.
+
+        A 'block' rule is an explicit per-destination block. An 'allow' rule is
+        a *whitelist* entry: the app is restricted to its allowed endpoints by
+        blocking everything else (Windows blocks beat allows, so we invert it).
+        Returns (ok, message)."""
         from . import firewall
         rule = {"exe": exe, "action": action, "direction": direction,
                 "remote_ip": remote_ip, "ports": ports, "protocol": protocol}
-        # de-dupe: drop any identical existing rule first
         self.settings.ip_rules = [
             r for r in self.settings.ip_rules if not _same_ip_rule(r, rule)]
+        self.settings.ip_rules.append(rule)
         ok, msg = (True, "")
         if self.settings.firewall_enabled:
-            ok, msg = firewall.add_ip_rule(exe, action, direction, remote_ip,
-                                           ports, protocol)
-        if ok:
-            self.settings.ip_rules.append(rule)
-            self.settings.save()
+            if action == "allow":
+                ok, msg = self._apply_whitelist(exe)
+            else:
+                ok, msg = firewall.add_ip_rule(exe, action, direction,
+                                               remote_ip, ports, protocol)
+        self.settings.save()
         return ok, msg
 
     def remove_ip_rule(self, rule: dict) -> tuple:
         from . import firewall
-        ok, msg = firewall.remove_ip_rule(
-            rule.get("exe", ""), rule.get("action", ""),
-            rule.get("direction", ""), rule.get("remote_ip", ""),
-            rule.get("ports", ""), rule.get("protocol", "any"))
         self.settings.ip_rules = [
             r for r in self.settings.ip_rules if not _same_ip_rule(r, rule)]
+        ok, msg = (True, "")
+        if rule.get("action") == "allow":
+            # recompute the whitelist from the remaining allow rules
+            ok, msg = self._apply_whitelist(rule.get("exe", ""))
+        else:
+            ok, msg = firewall.remove_ip_rule(
+                rule.get("exe", ""), rule.get("action", ""),
+                rule.get("direction", ""), rule.get("remote_ip", ""),
+                rule.get("ports", ""), rule.get("protocol", "any"))
         self.settings.save()
         return ok, msg
+
+    def _apply_whitelist(self, exe: str) -> tuple:
+        """(Re)install the whitelist for one exe from its current allow rules."""
+        from . import firewall
+        if not self.settings.firewall_enabled:
+            return True, ""
+        allow_entries = [r for r in self.settings.ip_rules
+                         if r.get("exe") == exe and r.get("action") == "allow"]
+        return firewall.set_whitelist(exe, allow_entries)
 
     def ip_rules_for(self, exe: str) -> list:
         return self.settings.ip_rules_for(exe)

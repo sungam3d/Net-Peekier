@@ -1,5 +1,5 @@
 # Net-Peekier
-##### v1.0.20
+##### v1.0.21
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -189,14 +189,17 @@ or subnet, optionally narrowed to specific ports and a protocol. Add them on the
 this IP:port for this app* (or the all-ports variants). They're saved in
 `settings.txt` and re-applied whenever the firewall is (re)enabled.
 
-> **Windows Firewall semantics — important.** Windows evaluates **block rules
-> before allow rules**, so an *allow* IP-rule cannot punch a hole through a
-> whole-app block. Use **block** IP-rules to carve specific destinations out of
-> an otherwise-open app, and **allow** IP-rules to *restrict* an open app toward
-> certain destinations. A strict "this app may ONLY reach X" (per-app default
-> deny) isn't expressible in plain Windows Firewall without a global
-> default-deny, which Net-Peekier deliberately never sets. The IP-rule dialog
-> repeats this note inline.
+> **How "allow only X" works.** Windows Firewall evaluates **block before
+> allow**, so an allow rule can't punch through a block. Net-Peekier gets the
+> result you want by *inverting* it: an **allow** IP-rule is treated as a
+> **whitelist** entry — the app is restricted to its allowed endpoints by
+> automatically blocking *everything else* (the complement of the allowed
+> IPs/ports, IPv4 and IPv6). Add a second allowed endpoint and the complement is
+> recomputed across both. A **block** IP-rule is the opposite: an explicit
+> per-destination block carved out of an otherwise-open app. Because a strict
+> whitelist blocks all other destinations, remember to also allow anything the
+> app genuinely needs (e.g. its DNS server). Every generated rule is scoped to
+> `program=exe`, so the blast radius is always that one app — never the machine.
 
 The manager updates **live** — any change you make (here, from the main list, or
 to a tag) is reflected immediately, so there's no Refresh button to press. On the
@@ -356,8 +359,11 @@ within each expanded program group.
 that window.
 
 **The main window's size and position are remembered too** — resize or move it
-and it reopens the same way next run. (If it ends up off-screen, e.g. after a
-monitor change, it falls back to a sensible default size.)
+and it reopens the same way next run. The Detail Information and Captured Packets
+windows now remember their own size as well, so their saved column widths always
+match the window they reopen in (no more last column running off the edge). (If
+a window ends up off-screen, e.g. after a monitor change, it falls back to a
+sensible default size.)
 
 ## How packets are attributed to a process
 
@@ -380,6 +386,7 @@ netpeekier/
   history.py               rolling activity log + aggregation for stats
   monitor.py               background worker: builds the 1/sec snapshot
   sysstats.py              optional CPU/GPU/RAM load, clock & temperature poller
+  ipcalc.py                IP/port complement maths for the allow-only whitelist
   util.py                  speed/byte formatting (unit-aware)
   paths.py                 program-root file locations (settings.txt, log/)
   settings.py              persisted state: options, blocks, limits, tags

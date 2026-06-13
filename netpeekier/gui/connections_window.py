@@ -27,7 +27,8 @@ class ConnectionsWindow(tk.Toplevel):
         self.monitor = monitor
         self.pid = pid
         self.title(f"Detail Information - {name} (PID {pid})")
-        self.geometry("920x440")
+        from .winutil import restore_geometry
+        restore_geometry(self, self.monitor.settings, "connections", "920x440")
 
         self._packet_windows: Dict[tuple, PacketsWindow] = {}
         self._known: set[str] = set()
@@ -74,8 +75,9 @@ class ConnectionsWindow(tk.Toplevel):
         self._build_ctx_menu()
         self.tree.bind("<Button-3>", self._on_right_click)
 
-        from .winutil import center_on_parent
-        center_on_parent(self, master)
+        if not self.monitor.settings.window_geometry_for("connections"):
+            from .winutil import center_on_parent
+            center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
 
     def _build_ctx_menu(self) -> None:
@@ -131,6 +133,8 @@ class ConnectionsWindow(tk.Toplevel):
                              msg or "Failed to add rule (need admin?).")
 
     def _close(self) -> None:
+        from .winutil import save_geometry
+        save_geometry(self, self.monitor.settings, "connections")
         capture_widths(self.tree, "connections", self.monitor.settings, _COLS)
         self.destroy()
 
