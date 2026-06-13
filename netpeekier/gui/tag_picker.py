@@ -10,6 +10,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import List, Optional
 
+from .winutil import center_on_parent
+
 
 class TagPickerDialog(tk.Toplevel):
     def __init__(self, master, title: str, prompt: str,
@@ -46,7 +48,6 @@ class TagPickerDialog(tk.Toplevel):
             side="left", padx=4)
 
         self.bind("<Return>", lambda _e: self._ok())
-        from .winutil import center_on_parent
         center_on_parent(self, master)
         self.grab_set()
 

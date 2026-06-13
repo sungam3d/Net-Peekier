@@ -162,6 +162,9 @@ class WinDivertBackend(CaptureBackend):
             lambda: deque(maxlen=packet_ring))
         # packet-log purge: None = keep (ring cap only); N = drop older than N min
         self._purge_minutes: Optional[int] = None
+        # always-on ceiling on tracked connections, so memory stays bounded even
+        # when time-based purging is off (the default). Stalest are evicted.
+        self._max_conns: int = 8000
 
         self._sniff_thread: Optional[threading.Thread] = None
         self._enforce_thread: Optional[threading.Thread] = None
@@ -307,22 +310,45 @@ class WinDivertBackend(CaptureBackend):
             self._purge_minutes = minutes if minutes and minutes > 0 else None
 
     def purge_packets(self) -> None:
-        """Drop captured packets older than the configured window, and forget
-        connections whose buffers go empty. No-op when purging is disabled."""
+        """Trim captured packets and bound the number of tracked connections.
+
+        Two independent jobs, both run every tick:
+          1. If the user set a purge window, drop packets older than it.
+          2. ALWAYS cap the number of tracked connections, so long captures
+             can't grow `_packets`/`_conn_total` without limit even when purging
+             is disabled (the default). We evict the connections whose newest
+             packet is oldest once we exceed the ceiling.
+        """
         with self._lock:
-            if not self._purge_minutes:
-                return
-            cutoff = time.time() - self._purge_minutes * 60
-            empty: list = []
-            for key, dq in self._packets.items():
-                while dq and dq[0].ts < cutoff:
-                    dq.popleft()
-                if not dq:
-                    empty.append(key)
-            for key in empty:
-                del self._packets[key]
-                # the cumulative counter for a long-dead connection can go too
-                self._conn_total.pop(key, None)
+            # 1. time-based purge (only if the user configured a window)
+            if self._purge_minutes:
+                cutoff = time.time() - self._purge_minutes * 60
+                empty: list = []
+                for key, dq in self._packets.items():
+                    while dq and dq[0].ts < cutoff:
+                        dq.popleft()
+                    if not dq:
+                        empty.append(key)
+                for key in empty:
+                    del self._packets[key]
+                    self._conn_total.pop(key, None)
+
+            # 2. always-on connection-count cap (independent of purge setting)
+            over = len(self._packets) - self._max_conns
+            if over > 0:
+                # newest packet ts per connection; evict the stalest connections
+                def _last_ts(dq):
+                    return dq[-1].ts if dq else 0.0
+                stale = sorted(self._packets.items(),
+                               key=lambda kv: _last_ts(kv[1]))[:over]
+                for key, _dq in stale:
+                    del self._packets[key]
+                    self._conn_total.pop(key, None)
+            # bound cumulative-total dicts too (they outlive their packets)
+            if len(self._conn_total) > self._max_conns * 2:
+                keep = set(self._packets)
+                for key in [k for k in self._conn_total if k not in keep]:
+                    self._conn_total.pop(key, None)
 
     def recent_packets(self, conn_key: ConnKey):
         with self._lock:

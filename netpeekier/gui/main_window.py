@@ -425,7 +425,6 @@ class NetPeekierApp(tk.Tk):
     # ---- refresh loop -----------------------------------------------------
     def _refresh(self) -> None:
         procs, totals = self.monitor.snapshot()
-        self.var_up_now.set(human_speed(totals.up_now))
         unit = self.monitor.settings.speed_unit
         self.var_up_now.set(human_speed(totals.up_now, unit))
         self.var_down_now.set(human_speed(totals.down_now, unit))

@@ -84,6 +84,10 @@ class Monitor:
         self._temp_allow: Dict[str, float] = {}   # exe -> expiry epoch
         self._lockdown_blocked: set = set()       # exes WE blocked for lockdown
         self._lockdown_pending: set = set()       # exes awaiting a user decision
+        # exes already evaluated by the lockdown sweep this session, so we don't
+        # re-validate/re-check them every tick. Invalidated when an exe's
+        # allow/block state changes (see _lockdown_unblock / temp-allow expiry).
+        self._lockdown_decided: set = set()
         # GUI sets this callback to receive (exe, name) prompts. Called from the
         # monitor thread, so the GUI must marshal to its own thread (after()).
         self.lockdown_prompt = None
@@ -257,6 +261,7 @@ class Monitor:
         else:
             if exe in self.settings.blocked_exes:
                 self.settings.blocked_exes.remove(exe)
+        self._lockdown_decided.discard(exe)
         self.settings.save()
 
     def set_limit(self, exe: str, up_bps: int, down_bps: int) -> None:
@@ -420,6 +425,7 @@ class Monitor:
         self._lockdown_blocked.clear()
         self._lockdown_pending.clear()
         self._temp_allow.clear()
+        self._lockdown_decided.clear()
 
     def is_allowed(self, exe: str) -> bool:
         """Allowed to reach the internet under lockdown: permanent allow OR a
@@ -444,6 +450,7 @@ class Monitor:
             if exe in self.settings.allowed_exes:
                 self.settings.allowed_exes.remove(exe)
         self._lockdown_pending.discard(exe)
+        self._lockdown_decided.discard(exe)
         self.settings.save()
 
     def set_tag_allowed(self, tag: str, allowed: bool) -> None:
@@ -456,6 +463,9 @@ class Monitor:
         if allowed:
             for exe in self.settings.exes_with_tag(tag):
                 self._lockdown_unblock(exe)
+        else:
+            for exe in self.settings.exes_with_tag(tag):
+                self._lockdown_decided.discard(exe)
         self.settings.save()
 
     def allow_temporarily(self, exe: str, minutes: int) -> None:
@@ -485,14 +495,18 @@ class Monitor:
 
     def _lockdown_unblock(self, exe: str) -> None:
         """Remove a lockdown-imposed block on an exe (not a user block)."""
+        self._lockdown_decided.discard(exe)   # force re-evaluation next sweep
         if exe in self._lockdown_blocked:
-            self._lockdown_blocked.discard(exe)
-            if exe not in self.settings.blocked_exes:
-                try:
-                    from . import firewall
-                    firewall.unblock_app(exe)
-                except Exception:
-                    pass
+            self._lockdown_discard_and_unblock(exe)
+
+    def _lockdown_discard_and_unblock(self, exe: str) -> None:
+        self._lockdown_blocked.discard(exe)
+        if exe not in self.settings.blocked_exes:
+            try:
+                from . import firewall
+                firewall.unblock_app(exe)
+            except Exception:
+                pass
 
     def _lockdown_sweep(self, procs) -> None:
         """Default-deny enforcement: block any WAN-using process that isn't
@@ -507,24 +521,36 @@ class Monitor:
         now = time.time()
         for exe in [e for e, t in self._temp_allow.items() if t <= now]:
             self._temp_allow.pop(exe, None)
+            self._lockdown_decided.discard(exe)   # re-evaluate now it's expired
         try:
             from . import firewall
         except Exception:
             return
         own = _own_exe()
+        decided = self._lockdown_decided
         for p in procs:
             exe = p.exe
             if not exe or not p.uses_wan:
                 continue
+            if exe in decided:           # already evaluated this exe; skip rework
+                continue
             if os.path.normcase(exe) == own or not firewall._valid_exe(exe):
+                decided.add(exe)
                 continue
             if self.is_allowed(exe) or exe in self.settings.blocked_exes:
+                # allowed (incl. temp) or user-blocked: nothing to do. Don't add
+                # temp-allowed exes to `decided` (they must be re-checked when
+                # the allowance expires); permanent states are safe to cache.
+                if not (exe in self._temp_allow):
+                    decided.add(exe)
                 continue
             if exe in self._lockdown_blocked:
+                decided.add(exe)
                 continue
             # deny by default: block now, then ask
             ok, _msg = firewall.block_app(exe)
             self._lockdown_blocked.add(exe)
+            decided.add(exe)
             if exe not in self._lockdown_pending and self.lockdown_prompt:
                 self._lockdown_pending.add(exe)
                 try:
@@ -766,6 +792,7 @@ class Monitor:
         for pid in stale:
             self._last_active.pop(pid, None)
             self._prev_conns.pop(pid, None)
+            self._prev_pid_totals.pop(pid, None)
 
         # write out the rolling activity log every interval
         self.history.maybe_flush()

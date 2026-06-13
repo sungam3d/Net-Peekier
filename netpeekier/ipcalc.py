@@ -139,3 +139,56 @@ def complement_ports(spec: str) -> str:
     Empty result means the spec already covers all ports."""
     comp = _complement(_port_intervals(spec), 1, 65535)
     return ",".join(str(lo) if lo == hi else f"{lo}-{hi}" for lo, hi in comp)
+
+
+# ---- strict validators (single source of truth; firewall delegates here) ---
+def valid_ip_spec(spec: str) -> bool:
+    """True if `spec` is a single IP / CIDR / a-b range / comma-list of those,
+    or 'any'/'*'. Rejects reversed ranges and mixed v4/v6 ranges. Strict: every
+    comma part must be valid (unlike the lenient internal parser)."""
+    if not spec or not isinstance(spec, str):
+        return False
+    spec = spec.strip()
+    if spec.lower() in ("any", "*"):
+        return True
+    for part in spec.split(","):
+        p = part.strip()
+        if not p:
+            return False
+        try:
+            if "-" in p and "/" not in p:
+                lo, hi = p.split("-", 1)
+                a = ipaddress.ip_address(lo.strip())
+                b = ipaddress.ip_address(hi.strip())
+                if a.version != b.version or int(a) > int(b):
+                    return False
+            elif "/" in p:
+                ipaddress.ip_network(p, strict=False)
+            else:
+                ipaddress.ip_address(p)
+        except Exception:
+            return False
+    return True
+
+
+def valid_ports(spec: str) -> bool:
+    """True if `spec` is empty (all ports) or a comma-list of ports/ranges in
+    1-65535. Rejects reversed ranges. Strict: every part must be valid."""
+    if not spec:
+        return True
+    for part in str(spec).split(","):
+        p = part.strip()
+        if not p:
+            return False
+        try:
+            if "-" in p:
+                a, b = p.split("-", 1)
+                a, b = int(a), int(b)
+                if not (0 < a <= 65535 and 0 < b <= 65535) or a > b:
+                    return False
+            else:
+                if not 0 < int(p) <= 65535:
+                    return False
+        except Exception:
+            return False
+    return True

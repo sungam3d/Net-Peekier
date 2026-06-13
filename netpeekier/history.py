@@ -65,28 +65,51 @@ class HistoryLogger:
         self._bucket.clear()
         self._window_start = now
         self._last_flush = now
+        self._maybe_rotate()
+
+    # Roll the log over once it passes this size, keeping one backup. Caps total
+    # on-disk history at ~2x this without any time-based pruning dependency.
+    _MAX_BYTES = 5 * 1024 * 1024
+
+    def _maybe_rotate(self) -> None:
+        try:
+            if os.path.getsize(self.path) < self._MAX_BYTES:
+                return
+        except OSError:
+            return
+        try:
+            bak = self.path + ".1"
+            if os.path.exists(bak):
+                os.remove(bak)
+            os.replace(self.path, bak)   # current -> .1, fresh file starts next
+        except Exception:
+            pass
 
 
 def load_history(path: str, since: float | None = None) -> list[dict]:
-    """Read all sample records (optionally only those at/after `since` epoch)."""
+    """Read all sample records (optionally only those at/after `since` epoch).
+
+    Also reads the rotated backup (``<path>.1``) so history isn't lost from the
+    stats view after the live file rolls over. Backup is read first (older)."""
     out: list[dict] = []
-    if not os.path.exists(path):
-        return out
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                if since is not None and rec.get("t", 0) < since:
-                    continue
-                out.append(rec)
-    except Exception:
-        pass
+    for p in (path + ".1", path):       # backup first => chronological-ish order
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if since is not None and rec.get("t", 0) < since:
+                        continue
+                    out.append(rec)
+        except Exception:
+            pass
     return out
 
 

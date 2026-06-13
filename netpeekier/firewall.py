@@ -144,55 +144,21 @@ def list_blocked() -> list[str]:
 
 
 import hashlib
-import ipaddress
 
 
 def _valid_ip_spec(spec: str) -> bool:
-    """Accept a single IP, a CIDR subnet, an a.b.c.d-e.f.g.h range, or a
-    comma-separated list of those. Rejects anything else so we never feed netsh
-    a malformed remoteip."""
-    if not spec or not isinstance(spec, str):
-        return False
-    spec = spec.strip()
-    if spec.lower() in ("any", "*"):
-        return True
-    for part in spec.split(","):
-        p = part.strip()
-        if not p:
-            return False
-        try:
-            if "-" in p:
-                lo, hi = p.split("-", 1)
-                ipaddress.ip_address(lo.strip())
-                ipaddress.ip_address(hi.strip())
-            elif "/" in p:
-                ipaddress.ip_network(p, strict=False)
-            else:
-                ipaddress.ip_address(p)
-        except Exception:
-            return False
-    return True
+    """Accept a single IP, CIDR subnet, a-b range, or comma-list (or any/*).
+    Delegates to ipcalc so spec parsing/validation has one source of truth;
+    rejects reversed ranges and mixed v4/v6 ranges."""
+    from . import ipcalc
+    return ipcalc.valid_ip_spec(spec)
 
 
 def _valid_ports(spec: str) -> bool:
-    """Empty (= all ports) is fine; otherwise a comma list of ports / ranges."""
-    if not spec:
-        return True
-    for part in str(spec).split(","):
-        p = part.strip()
-        if not p:
-            return False
-        try:
-            if "-" in p:
-                a, b = p.split("-", 1)
-                if not (0 < int(a) <= 65535 and 0 < int(b) <= 65535):
-                    return False
-            else:
-                if not 0 < int(p) <= 65535:
-                    return False
-        except Exception:
-            return False
-    return True
+    """Empty (= all ports) is fine; otherwise a comma list of ports / ranges
+    in 1-65535 with no reversed ranges. Delegates to ipcalc."""
+    from . import ipcalc
+    return ipcalc.valid_ports(spec)
 
 
 def _ip_rule_id(exe: str, action: str, direction: str, remote_ip: str,

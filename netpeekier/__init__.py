@@ -6,7 +6,7 @@ import re
 # of README.md ("##### vX.Y.Z"); get_version() reads it so the About box always
 # matches what you publish. Keep this constant roughly in sync as a backup for
 # when README.md isn't shipped alongside the code.
-__version__ = "1.0.21"
+__version__ = "1.0.22"
 
 
 def get_version() -> str:

@@ -17,6 +17,7 @@ from ..monitor import Monitor
 from ..paths import ensure_log_dir
 from .treesort import TreeSorter
 from .tablestyle import init_table, apply_stripes, restore_widths, capture_widths
+from .winutil import center_on_parent, restore_geometry, save_geometry
 
 _PCOLS = ("time", "local", "dir", "remote", "proto", "len")
 
@@ -40,7 +41,6 @@ class PacketsWindow(tk.Toplevel):
         self.monitor = monitor
         self.conn_key = conn_key
         self.title(f"Captured Packets - {title}")
-        from .winutil import restore_geometry
         restore_geometry(self, self.monitor.settings, "packets", "760x620")
 
         self._packets: List[Packet] = []
@@ -54,12 +54,10 @@ class PacketsWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
         # only center if we don't have a remembered position
         if not self.monitor.settings.window_geometry_for("packets"):
-            from .winutil import center_on_parent
             center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
 
     def _close(self) -> None:
-        from .winutil import save_geometry
         save_geometry(self, self.monitor.settings, "packets")
         capture_widths(self.tree, "packets", self.monitor.settings, _PCOLS)
         self.destroy()

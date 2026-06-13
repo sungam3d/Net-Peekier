@@ -11,6 +11,7 @@ Two jobs:
 """
 from __future__ import annotations
 
+import socket
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -37,7 +38,26 @@ class ProcessMap:
         self._loose: Dict[Tuple[str, int], int] = {}
         self._names: Dict[int, str] = {}
         self._exes: Dict[int, str] = {}
+        # process create-time per cached pid, to detect PID reuse (a recycled
+        # pid belonging to a different process must not keep the old name/exe).
+        self._ctime: Dict[int, float] = {}
         self._last_refresh = 0.0
+        # raw connection list from the last refresh(), reused by
+        # snapshot_connections() within the same tick to avoid a 2nd fetch.
+        self._raw_conns = None
+        self._raw_conns_ts = 0.0
+
+    def _check_reuse(self, pid: int) -> None:
+        """If this pid's process start-time changed since we cached it, the OS
+        reused the pid for a different process -- drop the stale name/exe."""
+        try:
+            ct = psutil.Process(pid).create_time()
+        except Exception:
+            return
+        if self._ctime.get(pid) != ct:
+            self._names.pop(pid, None)
+            self._exes.pop(pid, None)
+            self._ctime[pid] = ct
 
     # ---- process metadata -------------------------------------------------
     def name(self, pid: Optional[int]) -> str:
@@ -90,6 +110,11 @@ class ProcessMap:
             # Not elevated: fall back to per-process scan of what we can see.
             conns = self._scan_own_connections()
 
+        # Cache the raw list so snapshot_connections() can reuse it this tick
+        # instead of making a second (expensive) net_connections() call.
+        self._raw_conns = conns
+        self._raw_conns_ts = now
+
         for c in conns:
             if not c.laddr or c.pid is None:
                 continue
@@ -103,6 +128,19 @@ class ProcessMap:
         self._exact = exact
         self._loose = loose
 
+        # Prune the name/exe caches so they can't grow without bound on a
+        # long-running session: keep only pids that currently have a socket,
+        # plus drop entries for pids the OS has reused for a new process.
+        live = {pid for pid in loose.values()}
+        live |= {pid for pid in exact.values()}
+        for pid in list(self._names):
+            if pid not in live:
+                self._names.pop(pid, None)
+                self._exes.pop(pid, None)
+                self._ctime.pop(pid, None)
+        for pid in live:
+            self._check_reuse(pid)
+
     @staticmethod
     def _scan_own_connections() -> list:
         out = []
@@ -114,13 +152,21 @@ class ProcessMap:
         return out
 
     # ---- GUI data ---------------------------------------------------------
-    def snapshot_connections(self) -> Dict[int, List[Connection]]:
-        """All live connections grouped by PID, for the detail windows."""
+    def snapshot_connections(self, max_age: float = 0.5
+                             ) -> Dict[int, List[Connection]]:
+        """All live connections grouped by PID, for the detail windows.
+
+        Reuses the connection list captured by the most recent refresh() when
+        it's fresh enough (within max_age seconds), so a tick that calls
+        refresh() then snapshot_connections() only hits the expensive
+        net_connections() once. Falls back to its own fetch otherwise."""
         result: Dict[int, List[Connection]] = {}
-        try:
-            conns = psutil.net_connections(kind="inet")
-        except (psutil.AccessDenied, PermissionError):
-            conns = self._scan_own_connections()
+        conns = self._raw_conns
+        if conns is None or (time.time() - self._raw_conns_ts) > max_age:
+            try:
+                conns = psutil.net_connections(kind="inet")
+            except (psutil.AccessDenied, PermissionError):
+                conns = self._scan_own_connections()
 
         for c in conns:
             if c.pid is None:
@@ -146,7 +192,6 @@ class ProcessMap:
 
 
 def _proto_name(socktype) -> str:
-    import socket
     if socktype == socket.SOCK_STREAM:
         return "TCP"
     if socktype == socket.SOCK_DGRAM:

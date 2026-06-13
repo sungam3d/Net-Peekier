@@ -173,29 +173,51 @@ class Settings:
         return s
 
     def save(self) -> None:
+        """Persist atomically: write a temp file in the same directory, flush +
+        fsync, then os.replace() it over settings.txt. A crash mid-write can
+        therefore never truncate the real file (which load() would treat as
+        corrupt and reset every block/limit/tag/rule to defaults)."""
+        import os
+        import tempfile
+        payload = {
+            "speed_unit": self.speed_unit,
+            "packet_purge_minutes": self.packet_purge_minutes,
+            "blocked_exes": self.blocked_exes,
+            "exe_limits": self.exe_limits,
+            "exe_tags": self.exe_tags,
+            "tag_limits": self.tag_limits,
+            "tag_blocked": self.tag_blocked,
+            "column_widths": self.column_widths,
+            "window_geometry": self.window_geometry,
+            "window_geometries": self.window_geometries,
+            "idle_hide_minutes": self.idle_hide_minutes,
+            "lan_ranges": self.lan_ranges,
+            "show_lan": self.show_lan,
+            "show_wan": self.show_wan,
+            "firewall_enabled": self.firewall_enabled,
+            "lockdown_mode": self.lockdown_mode,
+            "allowed_exes": self.allowed_exes,
+            "tag_allowed": self.tag_allowed,
+            "allow_minutes": self.allow_minutes,
+            "ip_rules": self.ip_rules,
+        }
         try:
-            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-                json.dump({
-                    "speed_unit": self.speed_unit,
-                    "packet_purge_minutes": self.packet_purge_minutes,
-                    "blocked_exes": self.blocked_exes,
-                    "exe_limits": self.exe_limits,
-                    "exe_tags": self.exe_tags,
-                    "tag_limits": self.tag_limits,
-                    "tag_blocked": self.tag_blocked,
-                    "column_widths": self.column_widths,
-                    "window_geometry": self.window_geometry,
-                    "window_geometries": self.window_geometries,
-                    "idle_hide_minutes": self.idle_hide_minutes,
-                    "lan_ranges": self.lan_ranges,
-                    "show_lan": self.show_lan,
-                    "show_wan": self.show_wan,
-                    "firewall_enabled": self.firewall_enabled,
-                    "lockdown_mode": self.lockdown_mode,
-                    "allowed_exes": self.allowed_exes,
-                    "tag_allowed": self.tag_allowed,
-                    "allow_minutes": self.allow_minutes,
-                    "ip_rules": self.ip_rules,
-                }, f, indent=2)
+            directory = os.path.dirname(SETTINGS_PATH) or "."
+            fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".tmp",
+                                       dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, SETTINGS_PATH)   # atomic on Windows + POSIX
+            except Exception:
+                # clean up the temp file if the replace never happened
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
+                raise
         except Exception:
             pass

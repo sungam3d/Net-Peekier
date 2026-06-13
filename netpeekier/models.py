@@ -55,8 +55,19 @@ class Connection:
 
     @property
     def direction_arrow(self) -> str:
-        # Sockets with a remote endpoint are outbound from our point of view.
-        return "-->" if self.remote_port else ""
+        """Best-effort traffic direction for the row.
+
+        A listening socket has no single direction. When we have measured bytes,
+        the dominant side wins (more up than down => outbound). Otherwise fall
+        back to: a socket with a remote endpoint is outbound from our view.
+        """
+        if self.status == "LISTEN" or not self.remote_port:
+            return ""
+        if self.up_total or self.down_total:
+            return "-->" if self.up_total >= self.down_total else "<--"
+        if self.up_bps or self.down_bps:
+            return "-->" if self.up_bps >= self.down_bps else "<--"
+        return "-->"
 
 
 @dataclass

@@ -15,6 +15,8 @@ from ..util import human_speed, human_bytes, unit_suffix
 from .packets_window import PacketsWindow
 from .treesort import TreeSorter
 from .tablestyle import init_table, apply_stripes, restore_widths, capture_widths
+from .winutil import (center_on_parent, centered_message, restore_geometry,
+                      save_geometry)
 
 REFRESH_MS = 1000
 _COLS = ("proto", "local", "dir", "remote", "status",
@@ -27,7 +29,6 @@ class ConnectionsWindow(tk.Toplevel):
         self.monitor = monitor
         self.pid = pid
         self.title(f"Detail Information - {name} (PID {pid})")
-        from .winutil import restore_geometry
         restore_geometry(self, self.monitor.settings, "connections", "920x440")
 
         self._packet_windows: Dict[tuple, PacketsWindow] = {}
@@ -76,7 +77,6 @@ class ConnectionsWindow(tk.Toplevel):
         self.tree.bind("<Button-3>", self._on_right_click)
 
         if not self.monitor.settings.window_geometry_for("connections"):
-            from .winutil import center_on_parent
             center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
 
@@ -107,13 +107,11 @@ class ConnectionsWindow(tk.Toplevel):
         proto, lip, lport, rip, rport = iid.split("|")
         exe = self.monitor.procmap.exe(self.pid)
         if not exe:
-            from .winutil import centered_message
             centered_message(self, "info", "IP rule",
                              "No executable path available for this process "
                              "(try running as Administrator).")
             return
         if not rip or rip in ("-", "0.0.0.0", "::"):
-            from .winutil import centered_message
             centered_message(self, "info", "IP rule",
                              "This connection has no specific remote IP to add "
                              "a rule for.")
@@ -123,7 +121,6 @@ class ConnectionsWindow(tk.Toplevel):
         ok, msg = self.monitor.add_ip_rule(
             exe, action, "out", rip, ports,
             proto.lower() if proto.lower() in ("tcp", "udp") else "any")
-        from .winutil import centered_message
         if ok:
             scope = rip if all_ports else f"{rip}:{rport}"
             centered_message(self, "info", "IP rule",
@@ -133,7 +130,6 @@ class ConnectionsWindow(tk.Toplevel):
                              msg or "Failed to add rule (need admin?).")
 
     def _close(self) -> None:
-        from .winutil import save_geometry
         save_geometry(self, self.monitor.settings, "connections")
         capture_widths(self.tree, "connections", self.monitor.settings, _COLS)
         self.destroy()
