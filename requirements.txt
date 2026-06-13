@@ -1,8 +1,31 @@
-# Required
+# ---------------------------------------------------------------------------
+# Net-Peekier dependencies
+#
+# Only psutil is required. Everything below it is optional and the app degrades
+# gracefully when it's missing (features just show "--" / "recorded only" /
+# psutil-only mode). Install the optional extras for the full experience.
+# ---------------------------------------------------------------------------
+
+# Required -------------------------------------------------------------------
 psutil>=5.9
 
-# Optional but strongly recommended (Windows only): enables real per-process
-# upload/download speeds, the live packet + hex view, blocking and throttling.
-# Needs the WinDivert driver, which pydivert bundles. Install with:
+# Optional: per-process speeds, packet capture, blocking & throttling --------
+# Enables real per-process upload/download speeds, the live packet + hex view,
+# and enforced blocking/throttling. Needs the WinDivert driver, which pydivert
+# bundles. Windows only; run as Administrator.
 #     pip install pydivert
 pydivert>=2.1 ; platform_system == "Windows"
+
+# Optional: system-stats temperatures (CPU / GPU / RAM) ----------------------
+# The dashboard's System panel gets CPU/RAM load + clock from psutil with no
+# extra install. TEMPERATURES on Windows need LibreHardwareMonitor via this
+# thin pythonnet layer (pulls in pythonnet; needs .NET and Administrator).
+# Without it, temperature fields simply show "--".
+#     pip install HardwareMonitor
+HardwareMonitor>=0.9 ; platform_system == "Windows"
+
+# Optional: NVIDIA GPU fallback ----------------------------------------------
+# If HardwareMonitor isn't available, NVIDIA GPUs can still report temp/clock/
+# load through NVML. Skip if you use HardwareMonitor above or have no NVIDIA GPU.
+#     pip install nvidia-ml-py
+nvidia-ml-py>=12.0

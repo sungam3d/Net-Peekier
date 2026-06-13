@@ -59,6 +59,13 @@ class NetPeekierApp(tk.Tk):
 
         self._child_windows: Dict[int, ConnectionsWindow] = {}
         self._known_iids: set[str] = set()
+        self._lockdown_dialogs: dict = {}
+        self.monitor.lockdown_prompt = self._queue_lockdown_prompt
+
+        # background system-stats poller (CPU/GPU/RAM load, clock, temp)
+        from ..sysstats import SystemMonitor
+        self.sysmon = SystemMonitor(interval=2.0)
+        self.sysmon.start()
 
         self._build_style()
         self._build_dashboard()
@@ -121,6 +128,14 @@ class NetPeekierApp(tk.Tk):
                        command=self._on_firewall_toggle).pack(side="right")
         self._update_fw_light()
 
+        # ---- lockdown mode (to the LEFT of Enable Firewall) ----
+        self.var_lockdown = tk.BooleanVar(
+            value=self.monitor.settings.lockdown_mode)
+        tk.Checkbutton(bar, text="Lockdown Mode", bg="#d6dce4",
+                       variable=self.var_lockdown,
+                       command=self._on_lockdown_toggle).pack(
+            side="right", padx=(0, 14))
+
         tk.Label(bar, bg="#d6dce4", fg="#666",
                  text="(LAN = local-only traffic; WAN = internet. "
                       "Edit LAN ranges in Settings.)").pack(side="left", padx=12)
@@ -134,6 +149,31 @@ class NetPeekierApp(tk.Tk):
         self._update_fw_light()
         self.monitor.set_firewall_enabled(enabled)
         self._refresh_now()
+
+    def _on_lockdown_toggle(self) -> None:
+        on = self.var_lockdown.get()
+        if on and not self.monitor.settings.firewall_enabled:
+            # lockdown needs the firewall on to enforce anything
+            self.var_fw_enabled.set(True)
+            self._update_fw_light()
+            self.monitor.set_firewall_enabled(True)
+        self.monitor.set_lockdown(on)
+        self._refresh_now()
+
+    def _queue_lockdown_prompt(self, exe: str, name: str) -> None:
+        """Called from the monitor thread; marshal to the GUI thread."""
+        self.after(0, lambda: self._show_lockdown_prompt(exe, name))
+
+    def _show_lockdown_prompt(self, exe: str, name: str) -> None:
+        # don't stack duplicate dialogs for the same exe
+        if getattr(self, "_lockdown_dialogs", None) is None:
+            self._lockdown_dialogs = {}
+        if exe in self._lockdown_dialogs:
+            return
+        from .lockdown_dialog import LockdownPrompt
+        dlg = LockdownPrompt(self, self.monitor, exe, name,
+                             on_done=lambda: self._lockdown_dialogs.pop(exe, None))
+        self._lockdown_dialogs[exe] = dlg
 
     def _on_filter_change(self) -> None:
         self.monitor.settings.show_lan = self.var_show_lan.get()
@@ -174,31 +214,80 @@ class NetPeekierApp(tk.Tk):
             tk.Label(f, text=title, bg="#10212e", fg="#5a93ad",
                      font=("Segoe UI", 8, "bold")).grid(
                 row=0, column=0, columnspan=2, sticky="w")
+            # Fixed-width, right-anchored value labels so the numbers don't
+            # shuffle the layout as their width changes. width is in characters.
             tk.Label(f, text="NOW", bg="#10212e", fg="#3d6577",
                      font=("Segoe UI", 7)).grid(row=1, column=0, sticky="e",
                                                 padx=(0, 4))
             tk.Label(f, textvariable=now_var, bg="#10212e", fg=color,
-                     font=("Consolas", 20, "bold")).grid(row=1, column=1,
-                                                         sticky="w")
+                     font=("Consolas", 18, "bold"), width=11, anchor="e").grid(
+                row=1, column=1, sticky="e")
             tk.Label(f, text="PEAK", bg="#10212e", fg="#3d6577",
                      font=("Segoe UI", 7)).grid(row=2, column=0, sticky="e",
                                                 padx=(0, 4))
             tk.Label(f, textvariable=peak_var, bg="#10212e", fg="#3d6577",
-                     font=("Consolas", 11)).grid(row=2, column=1, sticky="w")
+                     font=("Consolas", 11), width=13, anchor="e").grid(
+                row=2, column=1, sticky="e")
             tk.Label(f, text="TOTAL", bg="#10212e", fg="#3d6577",
                      font=("Segoe UI", 7)).grid(row=3, column=0, sticky="e",
                                                 padx=(0, 4))
             tk.Label(f, textvariable=total_var, bg="#10212e", fg="#8fb6c8",
-                     font=("Consolas", 11)).grid(row=3, column=1, sticky="w")
+                     font=("Consolas", 11), width=13, anchor="e").grid(
+                row=3, column=1, sticky="e")
             return f
 
         up = block(bar, "UPLOAD", self.var_up_now, self.var_up_peak,
                    self.var_up_total, "#ffb454")
         down = block(bar, "DOWNLOAD", self.var_down_now, self.var_down_peak,
                      self.var_down_total, "#7fe3ff")
-        up.pack(side="left", expand=True, padx=18, pady=6)
+        up.pack(side="left", padx=(16, 10), pady=6)
         tk.Frame(bar, bg="#1d3a4d", width=2).pack(side="left", fill="y", pady=8)
-        down.pack(side="left", expand=True, padx=18, pady=6)
+        down.pack(side="left", padx=(10, 10), pady=6)
+        tk.Frame(bar, bg="#1d3a4d", width=2).pack(side="left", fill="y", pady=8)
+        self._build_sysstats(bar)
+
+    def _build_sysstats(self, parent) -> None:
+        """Third dashboard column: CPU / GPU / RAM load, clock and temperature.
+        Values that aren't available (e.g. temps without the optional sensor
+        library) show as a dash and never jump the layout (fixed widths)."""
+        f = tk.Frame(parent, bg="#10212e")
+        f.pack(side="left", expand=True, fill="x", padx=(14, 16), pady=6)
+
+        tk.Label(f, text="SYSTEM", bg="#10212e", fg="#5a93ad",
+                 font=("Segoe UI", 8, "bold")).grid(
+            row=0, column=0, columnspan=4, sticky="w")
+        # column headers
+        for col, txt in ((2, "CLOCK"), (3, "TEMP")):
+            tk.Label(f, text=txt, bg="#10212e", fg="#3d6577",
+                     font=("Segoe UI", 7)).grid(row=1, column=col, sticky="e",
+                                                padx=(8, 0))
+        tk.Label(f, text="LOAD", bg="#10212e", fg="#3d6577",
+                 font=("Segoe UI", 7)).grid(row=1, column=1, sticky="e",
+                                            padx=(8, 0))
+
+        self._sys_vars = {}
+
+        def srow(r, label, color):
+            tk.Label(f, text=label, bg="#10212e", fg="#5a93ad",
+                     font=("Segoe UI", 8, "bold")).grid(
+                row=r, column=0, sticky="w", padx=(0, 4))
+            v_load = tk.StringVar(value="--")
+            v_clock = tk.StringVar(value="--")
+            v_temp = tk.StringVar(value="--")
+            tk.Label(f, textvariable=v_load, bg="#10212e", fg=color,
+                     font=("Consolas", 10), width=6, anchor="e").grid(
+                row=r, column=1, sticky="e", padx=(8, 0))
+            tk.Label(f, textvariable=v_clock, bg="#10212e", fg="#8fb6c8",
+                     font=("Consolas", 10), width=8, anchor="e").grid(
+                row=r, column=2, sticky="e", padx=(8, 0))
+            tk.Label(f, textvariable=v_temp, bg="#10212e", fg="#8fb6c8",
+                     font=("Consolas", 10), width=6, anchor="e").grid(
+                row=r, column=3, sticky="e", padx=(8, 0))
+            return v_load, v_clock, v_temp
+
+        self._sys_vars["cpu"] = srow(2, "CPU", "#ffb454")
+        self._sys_vars["gpu"] = srow(3, "GPU", "#7fe3ff")
+        self._sys_vars["ram"] = srow(4, "RAM", "#a6e3a1")
 
     # ---- application list -------------------------------------------------
     def _build_app_list(self) -> None:
@@ -261,6 +350,10 @@ class NetPeekierApp(tk.Tk):
                              command=lambda: self._block_selected(True))
         self.ctx.add_command(label="Unblock",
                              command=lambda: self._block_selected(False))
+        self.ctx.add_command(label="Allow (Lockdown allow-list)",
+                             command=lambda: self._allow_selected(True))
+        self.ctx.add_command(label="Remove from allow-list",
+                             command=lambda: self._allow_selected(False))
         self.ctx.add_command(label="Set speed limit...",
                              command=self._limit_selected)
         self.ctx.add_separator()
@@ -344,7 +437,36 @@ class NetPeekierApp(tk.Tk):
         self.sorter.set_base("down", "Download" + suf)
 
         self._update_tree(procs)
+        self._update_sysstats()
         self.after(REFRESH_MS, self._refresh)
+
+    def _update_sysstats(self) -> None:
+        try:
+            s = self.sysmon.snapshot()
+        except Exception:
+            return
+        from ..sysstats import _fmt
+
+        def clock(mhz):
+            if mhz is None:
+                return "--"
+            if mhz >= 1000:
+                return f"{mhz / 1000:.1f}GHz"
+            return f"{mhz:.0f}MHz"
+
+        rows = {
+            "cpu": (_fmt(s.cpu_load, "%"), clock(s.cpu_clock),
+                    _fmt(s.cpu_temp, "\u00b0")),
+            "gpu": (_fmt(s.gpu_load, "%"), clock(s.gpu_clock),
+                    _fmt(s.gpu_temp, "\u00b0")),
+            "ram": (_fmt(s.ram_used, "%"), clock(s.ram_clock),
+                    _fmt(s.ram_temp, "\u00b0")),
+        }
+        for key, (load, clk, temp) in rows.items():
+            v_load, v_clock, v_temp = self._sys_vars[key]
+            v_load.set(load)
+            v_clock.set(clk)
+            v_temp.set(temp)
 
     def _update_tree(self, procs: List[ProcStat]) -> None:
         unit = self.monitor.settings.speed_unit
@@ -503,6 +625,21 @@ class NetPeekierApp(tk.Tk):
             messagebox.showerror("Firewall", msg or "Failed (need admin?).")
         self._refresh_now()
 
+    def _allow_selected(self, allow: bool) -> None:
+        proc = self._selected_proc()
+        if proc is None or not proc.exe:
+            return
+        if allow:
+            # allow and block are mutually exclusive
+            self.monitor.set_blocked(proc.exe, False)
+            try:
+                from .. import firewall
+                firewall.unblock_app(proc.exe)
+            except Exception:
+                pass
+        self.monitor.set_allowed(proc.exe, allow)
+        self._refresh_now()
+
     def _limit_selected(self) -> None:
         proc = self._selected_proc()
         if proc is None:
@@ -618,13 +755,8 @@ class NetPeekierApp(tk.Tk):
         self._refresh_now()
 
     def _about(self) -> None:
-        messagebox.showinfo(
-            "About Net-Peekier",
-            "Net-Peekier 0.1\n\n"
-            "A small per-process network monitor inspired by NetPeeker.\n"
-            f"Backend: {self.monitor.backend_name}\n\n"
-            "Live speeds, packet capture, blocking and throttling require\n"
-            "WinDivert (pip install pydivert) and Administrator rights.")
+        from .about_window import AboutWindow
+        AboutWindow(self, self.monitor)
 
     def _on_close(self) -> None:
         try:
@@ -634,6 +766,10 @@ class NetPeekierApp(tk.Tk):
                 self.monitor.settings.window_geometry = self.geometry()
             capture_widths(self.tree, "main", self.monitor.settings,
                            self._main_cols)   # this save() persists both
+        except Exception:
+            pass
+        try:
+            self.sysmon.stop()
         except Exception:
             pass
         self.monitor.stop()

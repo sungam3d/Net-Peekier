@@ -1,5 +1,5 @@
 # Net-Peekier
-##### v1.0.13
+##### v1.0.14
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -19,7 +19,7 @@ Dashboard (up/down now + peak + total)
    Settings ▸ Firewall and Tags  (the firewall/limits/tags manager)
             ▸ Preferences        (speed unit, purge, idle-hide, LAN ranges)
 ```
-| <img src="Preview/Net-Peeker-01.jpg" alt="Program Layout Preview" width="1000"> |
+<img src="Preview/Net-Peeker-01.jpg" alt="Program Layout Preview" width=100%>
 
 ## Quick start
 
@@ -82,6 +82,59 @@ ever leaves you stuck, untick **Enable Firewall** (top bar): it removes every
 rule this app created (only those — it matches on our own name prefix) and lets
 traffic flow, while keeping your block configuration so you can switch it back
 on later.
+
+## System stats panel
+
+The dashboard's third column (right of Upload / Download) shows live **system
+stats** — CPU, GPU and RAM, each with **load**, **clock** and **temperature**.
+
+What's available depends on what's installed:
+
+- **Load and clock** come from `psutil` (already required), so CPU load + clock
+  and RAM used % work out of the box. GPU load/clock need an optional sensor
+  library (below).
+- **Temperatures** are not exposed by `psutil` on Windows. To show CPU/GPU/RAM
+  temps, install the optional **LibreHardwareMonitor** layer:
+  `pip install HardwareMonitor` (pulls in `pythonnet`; needs **.NET** and the
+  app run **as Administrator**). NVIDIA GPUs can alternatively use
+  `pip install nvidia-ml-py` for GPU temp/clock/load.
+- Anything unavailable shows a dash (`--`) and never blocks the app — the same
+  graceful-degradation approach as WinDivert. **RAM clock and RAM temperature
+  are unavailable on most machines** (no sensor), so expect dashes there.
+
+The numbers are polled on a background thread (so slow sensor reads never stall
+the UI) and the dashboard values are fixed-width, so they don't shuffle the
+layout as they change.
+
+## Lockdown Mode (default-deny)
+
+To the left of Enable Firewall is a **Lockdown Mode** checkbox. When on, only
+programs on the **allow-list** may reach the internet; any other process that
+makes a WAN connection is blocked and a prompt appears asking what to do:
+
+- **Allow for N minutes** — temporary pass (the minutes value is remembered
+  between prompts).
+- **Add to allow list** — permanent allow.
+- **Block this time** — stays blocked for this session.
+- **Add to block list** — permanent block.
+
+You set the allow-list with an **Allow** checkbox in the Firewall and Tags rule
+dialog (or right-click ▸ *Allow*), and it works just like Block does — including
+**tag allow**: allow a tag and every program carrying it is allowed. Block and
+Allow are mutually exclusive. The allow-list, allowed tags and the remembered
+minutes are saved to `settings.txt`.
+
+Lockdown needs Enable Firewall on (ticking Lockdown turns it on). LAN-only
+traffic is never blocked, so local services keep working. Turning Lockdown off
+lifts every block it imposed but keeps your allow-list, and quitting the app
+also lifts them — nothing is left blocking traffic behind it.
+
+**How it enforces:** to stay safe, lockdown uses the same per-program Windows
+Firewall blocking as everything else (never a global block-everything rule).
+That means it's *reactive* — a brand-new connection may succeed for a moment
+before the block lands and the prompt appears. It's not a kernel-level
+default-deny like the original NetPeeker's driver, but it can't strand your
+machine offline.
 
 ## Enable Firewall (master switch)
 
@@ -292,6 +345,7 @@ netpeekier/
   firewall.py              netsh advfirewall block/unblock (validated, safe)
   history.py               rolling activity log + aggregation for stats
   monitor.py               background worker: builds the 1/sec snapshot
+  sysstats.py              optional CPU/GPU/RAM load, clock & temperature poller
   util.py                  speed/byte formatting (unit-aware)
   paths.py                 program-root file locations (settings.txt, log/)
   settings.py              persisted state: options, blocks, limits, tags

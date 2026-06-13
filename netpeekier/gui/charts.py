@@ -27,6 +27,18 @@ def _human(n: float) -> str:
     return f"{n:.1f} TB"
 
 
+def _legend(canvas, right_x: int, y: int) -> None:
+    """Draw a colour-matched 'up / down' key at the top-right, with the swatch
+    text in the same blue/green as the chart series (not grey)."""
+    font = ("Segoe UI", 8)
+    d = canvas.create_text(right_x, y, anchor="ne", text="\u25a0 down",
+                           fill=DOWN_COLOR, font=font)
+    bbox = canvas.bbox(d)
+    left = (bbox[0] - 10) if bbox else (right_x - 50)
+    canvas.create_text(left, y, anchor="ne", text="\u25a0 up",
+                       fill=UP_COLOR, font=font)
+
+
 class Chart(tk.Canvas):
     """Base canvas that redraws via a supplied draw fn on resize."""
 
@@ -110,9 +122,7 @@ def hour_chart(canvas: Chart, per_hour: dict, title: str = "") -> None:
         if hh % 3 == 0:
             canvas.create_text(x + bw / 2, base + 12, text=str(hh),
                                fill=AXIS, font=("Segoe UI", 8))
-    canvas.create_text(w - pad_r, pad_t + 2, anchor="ne",
-                       text="\u25a0 up   \u25a0 down", fill=AXIS,
-                       font=("Segoe UI", 8))
+    _legend(canvas, int(w - pad_r), int(pad_t + 2))
 
 
 def timeline_chart(canvas: Chart, points: List[Tuple[int, int, int]],
@@ -160,9 +170,7 @@ def timeline_chart(canvas: Chart, points: List[Tuple[int, int, int]],
     canvas.create_text(w - pad_r, base + 12,
                        text=_t.strftime("%H:%M", _t.localtime(t1)),
                        fill=AXIS, anchor="e", font=("Segoe UI", 8))
-    canvas.create_text(w - pad_r, pad_t + 2, anchor="ne",
-                       text="\u25a0 up   \u25a0 down", fill=AXIS,
-                       font=("Segoe UI", 8))
+    _legend(canvas, int(w - pad_r), int(pad_t + 2))
 
 
 def _elide(s: str, n: int) -> str:

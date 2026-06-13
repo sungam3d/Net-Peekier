@@ -10,6 +10,7 @@ It owns the ProcessMap and the capture backend, and on each tick:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -28,6 +29,15 @@ def _pid_alive(pid: int) -> bool:
         return psutil.pid_exists(pid)
     except Exception:
         return True   # if unsure, keep it rather than wrongly dropping
+
+
+def _own_exe() -> str:
+    """Path of the Python/host executable running Net-Peekier, so lockdown never
+    blocks the tool itself."""
+    try:
+        return os.path.normcase(os.path.abspath(sys.executable or ""))
+    except Exception:
+        return ""
 
 
 def _is_wan(ip_str: str, nets) -> bool:
@@ -64,6 +74,14 @@ class Monitor:
         self._totals = Totals()
         # last per-connection rates, so detail windows can show them
         self._conn_rates: Dict[ConnKey, Tuple[float, float]] = {}
+
+        # ---- lockdown state ----
+        self._temp_allow: Dict[str, float] = {}   # exe -> expiry epoch
+        self._lockdown_blocked: set = set()       # exes WE blocked for lockdown
+        self._lockdown_pending: set = set()       # exes awaiting a user decision
+        # GUI sets this callback to receive (exe, name) prompts. Called from the
+        # monitor thread, so the GUI must marshal to its own thread (after()).
+        self.lockdown_prompt = None
 
         # Reconcile with the OS firewall: anything Windows still blocks that we
         # created should appear in our settings too (and vice-versa on apply).
@@ -159,6 +177,12 @@ class Monitor:
         self.backend.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        # lockdown blocks are session-scoped enforcement; lift them on exit so
+        # quitting the app never leaves processes blocked behind us.
+        try:
+            self._clear_lockdown_blocks()
+        except Exception:
+            pass
         try:
             self.history.flush()
         except Exception:
@@ -297,6 +321,139 @@ class Monitor:
         except Exception:
             pass
 
+    # ---- lockdown mode ----------------------------------------------------
+    def set_lockdown(self, enabled: bool) -> None:
+        """Turn default-deny lockdown on/off. Turning off lifts every block we
+        imposed for lockdown (the user's explicit blocks stay)."""
+        self.settings.lockdown_mode = bool(enabled)
+        self.settings.save()
+        if not enabled:
+            self._clear_lockdown_blocks()
+
+    def _clear_lockdown_blocks(self) -> None:
+        try:
+            from . import firewall
+            for exe in list(self._lockdown_blocked):
+                # only unblock if the user hasn't also explicitly blocked it
+                if exe not in self.settings.blocked_exes:
+                    firewall.unblock_app(exe)
+        except Exception:
+            pass
+        self._lockdown_blocked.clear()
+        self._lockdown_pending.clear()
+        self._temp_allow.clear()
+
+    def is_allowed(self, exe: str) -> bool:
+        """Allowed to reach the internet under lockdown: permanent allow OR a
+        live temporary allow."""
+        if not exe:
+            return False
+        if self.settings.is_allowed_exe(exe):
+            return True
+        exp = self._temp_allow.get(exe)
+        return bool(exp) and exp > time.time()
+
+    def set_allowed(self, exe: str, allowed: bool) -> None:
+        """Permanent allow-list membership (mirrors set_blocked)."""
+        if not exe:
+            return
+        if allowed:
+            if exe not in self.settings.allowed_exes:
+                self.settings.allowed_exes.append(exe)
+            # allowing lifts any lockdown block we put on it
+            self._lockdown_unblock(exe)
+        else:
+            if exe in self.settings.allowed_exes:
+                self.settings.allowed_exes.remove(exe)
+        self._lockdown_pending.discard(exe)
+        self.settings.save()
+
+    def set_tag_allowed(self, tag: str, allowed: bool) -> None:
+        if not tag:
+            return
+        if allowed and tag not in self.settings.tag_allowed:
+            self.settings.tag_allowed.append(tag)
+        elif not allowed and tag in self.settings.tag_allowed:
+            self.settings.tag_allowed.remove(tag)
+        if allowed:
+            for exe in self.settings.exes_with_tag(tag):
+                self._lockdown_unblock(exe)
+        self.settings.save()
+
+    def allow_temporarily(self, exe: str, minutes: int) -> None:
+        if not exe:
+            return
+        self.settings.allow_minutes = max(1, int(minutes))
+        self._temp_allow[exe] = time.time() + self.settings.allow_minutes * 60
+        self._lockdown_unblock(exe)
+        self._lockdown_pending.discard(exe)
+        self.settings.save()
+
+    def lockdown_block(self, exe: str, permanent: bool) -> None:
+        """User chose to block a prompted process. permanent=True adds it to the
+        block list; otherwise it stays blocked just for this lockdown session."""
+        if not exe:
+            return
+        self._lockdown_pending.discard(exe)
+        if permanent:
+            self.set_blocked(exe, True)
+            try:
+                from . import firewall
+                if self.settings.firewall_enabled:
+                    firewall.block_app(exe)
+            except Exception:
+                pass
+        # otherwise it's already blocked by the lockdown sweep; leave it.
+
+    def _lockdown_unblock(self, exe: str) -> None:
+        """Remove a lockdown-imposed block on an exe (not a user block)."""
+        if exe in self._lockdown_blocked:
+            self._lockdown_blocked.discard(exe)
+            if exe not in self.settings.blocked_exes:
+                try:
+                    from . import firewall
+                    firewall.unblock_app(exe)
+                except Exception:
+                    pass
+
+    def _lockdown_sweep(self, procs) -> None:
+        """Default-deny enforcement: block any WAN-using process that isn't
+        allowed, and prompt the user once per exe. Safe per-exe netsh blocking
+        only -- never a global block-all rule."""
+        s = self.settings
+        if not (s.lockdown_mode and s.firewall_enabled):
+            if self._lockdown_blocked:
+                self._clear_lockdown_blocks()
+            return
+        # expire stale temp allows
+        now = time.time()
+        for exe in [e for e, t in self._temp_allow.items() if t <= now]:
+            self._temp_allow.pop(exe, None)
+        try:
+            from . import firewall
+        except Exception:
+            return
+        own = _own_exe()
+        for p in procs:
+            exe = p.exe
+            if not exe or not p.uses_wan:
+                continue
+            if os.path.normcase(exe) == own or not firewall._valid_exe(exe):
+                continue
+            if self.is_allowed(exe) or exe in self.settings.blocked_exes:
+                continue
+            if exe in self._lockdown_blocked:
+                continue
+            # deny by default: block now, then ask
+            ok, _msg = firewall.block_app(exe)
+            self._lockdown_blocked.add(exe)
+            if exe not in self._lockdown_pending and self.lockdown_prompt:
+                self._lockdown_pending.add(exe)
+                try:
+                    self.lockdown_prompt(exe, p.name)
+                except Exception:
+                    pass
+
     def remove_all_firewall_rules(self):
         """Emergency cleanup: delete every firewall rule this app created and
         clear our block state. Returns (count, message)."""
@@ -371,7 +528,8 @@ class Monitor:
         `blocked` is EFFECTIVE (direct or via a blocked tag); `via_tag` is True
         when the block comes from the tag rather than the app itself."""
         s = self.settings
-        exes = set(s.blocked_exes) | set(s.exe_limits) | set(s.exe_tags)
+        exes = (set(s.blocked_exes) | set(s.exe_limits) | set(s.exe_tags)
+                | set(s.allowed_exes))
         out = {}
         for exe in exes:
             eup, edown, from_tag = self.effective_limit(exe)
@@ -380,6 +538,14 @@ class Monitor:
             via_tag = bool(tag) and tag in s.tag_blocked
             out[exe] = (direct or via_tag, (eup, edown), tag, from_tag, via_tag)
         return out
+
+    def allow_state(self, exe: str) -> tuple:
+        """(allowed, via_tag) for an exe: permanent allow directly or via tag."""
+        s = self.settings
+        direct = exe in s.allowed_exes
+        tag = s.exe_tags.get(exe, "")
+        via_tag = bool(tag) and tag in s.tag_allowed
+        return (direct or via_tag, via_tag and not direct)
 
     # ---- worker -----------------------------------------------------------
     def _loop(self) -> None:
@@ -533,6 +699,12 @@ class Monitor:
                    reverse=True)
 
         totals = self._compute_totals(up_total, down_total)
+
+        # default-deny enforcement (no-op unless lockdown is on)
+        try:
+            self._lockdown_sweep(procs)
+        except Exception:
+            pass
 
         # Cumulative session totals: system-wide bytes since app start. Using
         # the OS counters here keeps this accurate and always-available, even

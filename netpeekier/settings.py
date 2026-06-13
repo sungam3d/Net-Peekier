@@ -60,6 +60,13 @@ class Settings:
     # master switch: when off, our firewall blocks are removed (traffic flows)
     # but the block configuration is preserved and re-applied when turned on.
     firewall_enabled: bool = True
+    # Lockdown mode: default-deny. Only allowed exes/tags reach the internet;
+    # anything else prompts. allow_minutes is the remembered "allow for N min"
+    # value shown in the prompt.
+    lockdown_mode: bool = False
+    allowed_exes: List[str] = field(default_factory=list)   # permanent allow
+    tag_allowed: List[str] = field(default_factory=list)    # tags allowed
+    allow_minutes: int = 5
 
     # ---- convenience views -----------------------------------------------
     def exe_limit(self, exe: str) -> Tuple[int, int]:
@@ -75,7 +82,17 @@ class Settings:
 
     def all_tags(self) -> List[str]:
         return sorted(set(self.exe_tags.values()) | set(self.tag_limits)
-                      | set(self.tag_blocked))
+                      | set(self.tag_blocked) | set(self.tag_allowed))
+
+    def is_allowed_exe(self, exe: str) -> bool:
+        """True if this exe is on the permanent allow list, directly or via an
+        allowed tag. Mirrors how blocking works with tags."""
+        if not exe:
+            return False
+        if exe in self.allowed_exes:
+            return True
+        tag = self.exe_tags.get(exe)
+        return bool(tag) and tag in self.tag_allowed
 
     def lan_networks(self):
         """Parsed ip_network objects for the configured LAN ranges."""
@@ -125,6 +142,11 @@ class Settings:
             s.show_lan = bool(data.get("show_lan", True))
             s.show_wan = bool(data.get("show_wan", True))
             s.firewall_enabled = bool(data.get("firewall_enabled", True))
+            s.lockdown_mode = bool(data.get("lockdown_mode", False))
+            s.allowed_exes = list(data.get("allowed_exes", []))
+            s.tag_allowed = list(data.get("tag_allowed", []))
+            am = data.get("allow_minutes", 5)
+            s.allow_minutes = int(am) if am else 5
         except Exception:
             pass
         return s
@@ -147,6 +169,10 @@ class Settings:
                     "show_lan": self.show_lan,
                     "show_wan": self.show_wan,
                     "firewall_enabled": self.firewall_enabled,
+                    "lockdown_mode": self.lockdown_mode,
+                    "allowed_exes": self.allowed_exes,
+                    "tag_allowed": self.tag_allowed,
+                    "allow_minutes": self.allow_minutes,
                 }, f, indent=2)
         except Exception:
             pass

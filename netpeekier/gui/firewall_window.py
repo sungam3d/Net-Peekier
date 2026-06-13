@@ -40,7 +40,8 @@ class RuleDialog(tk.Toplevel):
     def __init__(self, master, exe: str,
                  blocked: bool, up_bps: int, down_bps: int,
                  tag: str = "", existing_tags=None, tag_caps=None,
-                 tag_blocked: bool = False) -> None:
+                 tag_blocked: bool = False,
+                 allowed: bool = False, tag_allowed: bool = False) -> None:
         super().__init__(master)
         self.title("App rule")
         self.resizable(False, False)
@@ -50,6 +51,7 @@ class RuleDialog(tk.Toplevel):
         # tag_caps: {tag -> (up_bps, down_bps)} so we can show/enforce the max
         self._tag_caps = dict(tag_caps or {})
         self._tag_blocked = tag_blocked
+        self._tag_allowed = tag_allowed
 
         self.exe = exe
         pad = {"padx": 8, "pady": 4}
@@ -66,7 +68,8 @@ class RuleDialog(tk.Toplevel):
 
         self.var_block = tk.BooleanVar(value=blocked)
         tk.Checkbutton(self, text="Block all traffic (firewall)",
-                       variable=self.var_block).grid(
+                       variable=self.var_block,
+                       command=self._block_changed).grid(
             row=2, column=0, columnspan=2, sticky="w", **pad)
         if self._tag_blocked:
             tk.Label(self, fg="#b00000", justify="left", anchor="w",
@@ -75,34 +78,47 @@ class RuleDialog(tk.Toplevel):
                           "block stays until you change the tag rule.").grid(
                 row=2, column=0, columnspan=2, sticky="e", padx=8)
 
+        # Allow list (used by Lockdown Mode). Behaves like Block: mutually
+        # exclusive, and a tag-allow marks all members allowed.
+        self.var_allow = tk.BooleanVar(value=allowed)
+        tk.Checkbutton(self, text="Allow internet (Lockdown allow-list)",
+                       variable=self.var_allow,
+                       command=self._allow_changed).grid(
+            row=3, column=0, columnspan=2, sticky="w", **pad)
+        if self._tag_allowed:
+            tk.Label(self, fg="#0a7d00", justify="left", anchor="w",
+                     wraplength=340,
+                     text="This app is also allowed by its tag's rule.").grid(
+                row=3, column=0, columnspan=2, sticky="e", padx=8)
+
         tk.Label(self, text="Upload limit (KB/s, 0 = unlimited):").grid(
-            row=3, column=0, sticky="w", **pad)
+            row=4, column=0, sticky="w", **pad)
         self.var_up = tk.StringVar(value=str(up_bps // 1024 if up_bps else 0))
         tk.Entry(self, textvariable=self.var_up, width=10).grid(
-            row=3, column=1, sticky="w", **pad)
+            row=4, column=1, sticky="w", **pad)
 
         tk.Label(self, text="Download limit (KB/s, 0 = unlimited):").grid(
-            row=4, column=0, sticky="w", **pad)
+            row=5, column=0, sticky="w", **pad)
         self.var_down = tk.StringVar(
             value=str(down_bps // 1024 if down_bps else 0))
         tk.Entry(self, textvariable=self.var_down, width=10).grid(
-            row=4, column=1, sticky="w", **pad)
+            row=5, column=1, sticky="w", **pad)
 
         tk.Label(self, text="Group tag (optional):").grid(
-            row=5, column=0, sticky="w", **pad)
+            row=6, column=0, sticky="w", **pad)
         self.var_tag = tk.StringVar(value=tag or "")
         self.combo_tag = ttk.Combobox(self, textvariable=self.var_tag,
                                       width=12, values=self._existing_tags)
-        self.combo_tag.grid(row=5, column=1, sticky="w", **pad)
+        self.combo_tag.grid(row=6, column=1, sticky="w", **pad)
         self.var_tag.trace_add("write", lambda *_: self._update_cap_note())
 
         # note showing the tag's cap (the individual limit can't exceed it)
         self.cap_note = tk.Label(self, fg="#0a4d7d", justify="left",
                                  anchor="w", wraplength=340)
-        self.cap_note.grid(row=6, column=0, columnspan=2, sticky="w", padx=8)
+        self.cap_note.grid(row=7, column=0, columnspan=2, sticky="w", padx=8)
 
         btns = tk.Frame(self)
-        btns.grid(row=7, column=0, columnspan=2, pady=(8, 8))
+        btns.grid(row=8, column=0, columnspan=2, pady=(8, 8))
         tk.Button(btns, text="OK", width=10, command=self._ok).pack(
             side="left", padx=4)
         tk.Button(btns, text="Cancel", width=10, command=self.destroy).pack(
@@ -151,8 +167,17 @@ class RuleDialog(tk.Toplevel):
         if cap_down:
             down = cap_down if down <= 0 else min(down, cap_down)
         self.result = (self.var_block.get(), up * 1024, down * 1024,
-                       self.var_tag.get().strip())
+                       self.var_tag.get().strip(), self.var_allow.get())
         self.destroy()
+
+    def _block_changed(self) -> None:
+        # block and allow are mutually exclusive
+        if self.var_block.get():
+            self.var_allow.set(False)
+
+    def _allow_changed(self) -> None:
+        if self.var_allow.get():
+            self.var_block.set(False)
 
 
 class ProcessPicker(tk.Toplevel):
@@ -217,7 +242,7 @@ class FirewallManagerWindow(tk.Toplevel):
         self._build_table()
         self._build_buttons()
         restore_widths(self.tree, "firewall", self.monitor.settings,
-                       ("#0", "blocked", "up", "down", "tag", "path"))
+                       ("#0", "blocked", "allowed", "up", "down", "tag", "path"))
         self.protocol("WM_DELETE_WINDOW", self._close)
         self._refresh()
         from .winutil import center_on_parent
@@ -233,7 +258,7 @@ class FirewallManagerWindow(tk.Toplevel):
 
     def _close(self) -> None:
         capture_widths(self.tree, "firewall", self.monitor.settings,
-                       ("#0", "blocked", "up", "down", "tag", "path"))
+                       ("#0", "blocked", "allowed", "up", "down", "tag", "path"))
         self.destroy()
 
     # ---- layout -----------------------------------------------------------
@@ -241,19 +266,20 @@ class FirewallManagerWindow(tk.Toplevel):
         frame = tk.Frame(self)
         frame.pack(side="top", fill="both", expand=True, padx=6, pady=6)
 
-        cols = ("blocked", "up", "down", "tag", "path")
+        cols = ("blocked", "allowed", "up", "down", "tag", "path")
         self.tree = ttk.Treeview(frame, columns=cols, show="tree headings")
         self.tree.column("#0", width=140, anchor="w")
-        self.tree.column("blocked", width=62, anchor="center")
-        self.tree.column("up", width=95, anchor="e")
-        self.tree.column("down", width=95, anchor="e")
-        self.tree.column("tag", width=80, anchor="w")
-        self.tree.column("path", width=240, anchor="w")
+        self.tree.column("blocked", width=58, anchor="center")
+        self.tree.column("allowed", width=70, anchor="center")
+        self.tree.column("up", width=92, anchor="e")
+        self.tree.column("down", width=92, anchor="e")
+        self.tree.column("tag", width=78, anchor="w")
+        self.tree.column("path", width=230, anchor="w")
 
         self._sortkeys: dict = {}
         self.sorter = TreeSorter(
             self.tree,
-            {"#0": "Application", "blocked": "Blocked",
+            {"#0": "Application", "blocked": "Blocked", "allowed": "Allowed",
              "up": "Upload limit", "down": "Download limit",
              "tag": "Tag", "path": "Path"},
             lambda iid, col: self._sortkeys.get(iid, {}).get(col),
@@ -302,6 +328,9 @@ class FirewallManagerWindow(tk.Toplevel):
         for exe, (blocked, (up, down), tag, from_tag, via_tag) in \
                 self.monitor.managed_apps().items():
             iid = exe
+            allowed, allow_via_tag = self.monitor.allow_state(exe)
+            allow_txt = ("Yes (tag)" if (allowed and allow_via_tag)
+                         else ("Yes" if allowed else "No"))
             # A block overrides everything, so don't clutter the row with limits.
             if blocked:
                 blk_txt = "Yes (tag)" if via_tag else "Yes"
@@ -313,11 +342,12 @@ class FirewallManagerWindow(tk.Toplevel):
                 down_txt = _fmt_limit(down) + (suffix if down else "")
             self.tree.insert(
                 "", "end", iid=iid, text=os.path.basename(exe) or exe,
-                values=(blk_txt, up_txt, down_txt, tag, exe))
+                values=(blk_txt, allow_txt, up_txt, down_txt, tag, exe))
             rowtags[iid] = ("blocked",) if blocked else ()
             sortkeys[iid] = {
                 "#0": (os.path.basename(exe) or exe).lower(),
                 "blocked": 1 if blocked else 0,
+                "allowed": 1 if allowed else 0,
                 "up": up, "down": down, "tag": (tag or "").lower(),
                 "path": exe.lower(),
             }
@@ -333,7 +363,8 @@ class FirewallManagerWindow(tk.Toplevel):
 
     # ---- actions ----------------------------------------------------------
     def _apply_rule(self, exe: str, blocked: bool,
-                    up_bps: int, down_bps: int, tag: str = "") -> None:
+                    up_bps: int, down_bps: int, tag: str = "",
+                    allowed: bool = False) -> None:
         """Push a desired state to firewall + monitor, reporting failures."""
         errors = []
         # block / unblock via the OS firewall (only when the master switch is on)
@@ -352,6 +383,8 @@ class FirewallManagerWindow(tk.Toplevel):
         # Set the tag FIRST so the limit is clamped against the right tag cap.
         self.monitor.set_exe_tag(exe, tag or None)
         self.monitor.set_limit(exe, up_bps, down_bps)
+        # allow-list membership (Lockdown). Block wins if somehow both set.
+        self.monitor.set_allowed(exe, allowed and not blocked)
         if (up_bps or down_bps) and not self.monitor.has_per_process_speed:
             errors.append("Speed limit saved, but enforcement needs WinDivert "
                           "(pip install pydivert).")
@@ -372,16 +405,19 @@ class FirewallManagerWindow(tk.Toplevel):
         # The dialog edits the app's OWN block checkbox; a block that comes from
         # a blocked TAG isn't the app's own state, so present the direct block.
         direct_block = exe in self.monitor.list_blocked()
+        direct_allow = exe in self.monitor.settings.allowed_exes
+        _allowed, allow_via_tag = self.monitor.allow_state(exe)
         own_up, own_down = self.monitor.settings.exe_limit(exe)
         dlg = RuleDialog(self, exe, direct_block, own_up, own_down, tag,
                          existing_tags=self.monitor.settings.all_tags(),
                          tag_caps=self._tag_caps(),
-                         tag_blocked=via_tag)
+                         tag_blocked=via_tag,
+                         allowed=direct_allow, tag_allowed=allow_via_tag)
         self.wait_window(dlg)
         if dlg.result is None:
             return
-        new_blocked, new_up, new_down, new_tag = dlg.result
-        self._apply_rule(exe, new_blocked, new_up, new_down, new_tag)
+        new_blocked, new_up, new_down, new_tag, new_allow = dlg.result
+        self._apply_rule(exe, new_blocked, new_up, new_down, new_tag, new_allow)
 
     def _edit(self) -> None:
         exe = self._selected_exe()
