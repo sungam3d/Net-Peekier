@@ -34,3 +34,10 @@ HardwareMonitor>=0.9 ; platform_system == "Windows"
 # load through NVML. Skip if you use HardwareMonitor above or have no NVIDIA GPU.
 #     pip install nvidia-ml-py
 nvidia-ml-py>=12.0
+
+# Optional: extra image formats in the About > Readme viewer -----------------
+# The built-in README viewer shows PNG/GIF images with no extra install. Add
+# Pillow only if your README embeds JPG/WebP images and you want them rendered;
+# without it those images fall back to their alt-text.
+#     pip install Pillow
+Pillow>=9.0

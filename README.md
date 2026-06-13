@@ -1,5 +1,5 @@
 # Net-Peekier
-##### v1.0.18
+##### v1.0.19
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
