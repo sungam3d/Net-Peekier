@@ -28,43 +28,51 @@ def center_on_parent(win, parent) -> None:
 
 
 def centered_message(parent, kind: str, title: str, message: str) -> None:
-    """Show a messagebox reliably centred over `parent`.
+    """Show a simple message dialog reliably centred over `parent`.
 
-    Tkinter's native messageboxes only center on the parent when that window is
-    the transient/active owner, so a plain showinfo can land on the wrong
-    screen. We place a tiny transient holder exactly at the parent's center and
-    parent the dialog to that, which keeps the popup over the right window.
+    The native tk messagebox ignores hidden helper windows and falls back to
+    centring on the root window, so instead we build a tiny modal Toplevel and
+    position it ourselves over `parent` with center_on_parent.
     """
     import tkinter as tk
-    from tkinter import messagebox
-    holder = None
     try:
-        parent.update_idletasks()
-        px = parent.winfo_rootx()
-        py = parent.winfo_rooty()
-        pw = parent.winfo_width() or parent.winfo_reqwidth()
-        ph = parent.winfo_height() or parent.winfo_reqheight()
-        holder = tk.Toplevel(parent)
-        holder.withdraw()
-        holder.overrideredirect(True)
-        holder.transient(parent)
-        # a 1x1 window at the parent's center; the messagebox centers on it
-        holder.geometry(f"1x1+{px + pw // 2}+{py + ph // 2}")
-        holder.update_idletasks()
-        fn = {"info": messagebox.showinfo,
-              "warning": messagebox.showwarning,
-              "error": messagebox.showerror}.get(kind, messagebox.showinfo)
-        fn(title, message, parent=holder)
+        dlg = tk.Toplevel(parent)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(parent)
+        dlg.configure(bg="white")
+
+        icon = {"error": "\u2716", "warning": "\u26a0"}.get(kind, "\u2139")
+        icon_fg = {"error": "#c0392b", "warning": "#c08a00"}.get(kind, "#1565c0")
+
+        body = tk.Frame(dlg, bg="white")
+        body.pack(fill="both", expand=True, padx=18, pady=(16, 6))
+        tk.Label(body, text=icon, bg="white", fg=icon_fg,
+                 font=("Segoe UI", 20)).pack(side="left", padx=(0, 12),
+                                             anchor="n")
+        tk.Label(body, text=message, bg="white", justify="left",
+                 wraplength=340, font=("Segoe UI", 10)).pack(side="left",
+                                                             anchor="w")
+
+        btnbar = tk.Frame(dlg, bg="white")
+        btnbar.pack(fill="x", padx=12, pady=(0, 12))
+        ok = tk.Button(btnbar, text="OK", width=10, command=dlg.destroy)
+        ok.pack(side="right")
+
+        dlg.bind("<Return>", lambda _e: dlg.destroy())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+        center_on_parent(dlg, parent)
+        ok.focus_set()
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+        parent.wait_window(dlg)
     except Exception:
-        # fall back to a normal parent-anchored dialog
+        # last-ditch fallback so the user still sees something
         try:
             from tkinter import messagebox as _mb
             _mb.showinfo(title, message, parent=parent)
         except Exception:
             pass
-    finally:
-        if holder is not None:
-            try:
-                holder.destroy()
-            except Exception:
-                pass
