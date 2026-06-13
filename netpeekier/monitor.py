@@ -40,6 +40,11 @@ def _own_exe() -> str:
         return ""
 
 
+def _same_ip_rule(a: dict, b: dict) -> bool:
+    keys = ("exe", "action", "direction", "remote_ip", "ports", "protocol")
+    return all((a.get(k) or "") == (b.get(k) or "") for k in keys)
+
+
 def _is_wan(ip_str: str, nets) -> bool:
     """True if a remote IP is a routable internet (WAN) address, i.e. not in
     any configured LAN range and not otherwise private/local."""
@@ -165,9 +170,17 @@ class Monitor:
                         to_block.update(e for e in s.exes_with_tag(tag) if e)
                     for exe in to_block:
                         firewall.block_app(exe)   # block_app re-validates too
+                    # re-apply per-IP rules
+                    firewall.remove_all_ip_rules()
+                    for r in s.ip_rules:
+                        firewall.add_ip_rule(
+                            r.get("exe", ""), r.get("action", ""),
+                            r.get("direction", ""), r.get("remote_ip", ""),
+                            r.get("ports", ""), r.get("protocol", "any"))
                 else:
                     # master switch is off: make sure none of our rules linger
                     firewall.remove_all_rules()
+                    firewall.remove_all_ip_rules()
             except Exception:
                 pass
         s.save()
@@ -320,6 +333,44 @@ class Monitor:
                 firewall.remove_all_rules()   # keeps settings, drops netsh rules
         except Exception:
             pass
+
+    # ---- per-IP rules -----------------------------------------------------
+    def add_ip_rule(self, exe: str, action: str, direction: str,
+                    remote_ip: str, ports: str = "",
+                    protocol: str = "any") -> tuple:
+        """Add a per-IP firewall rule for an exe and persist it. Returns
+        (ok, message)."""
+        from . import firewall
+        rule = {"exe": exe, "action": action, "direction": direction,
+                "remote_ip": remote_ip, "ports": ports, "protocol": protocol}
+        # de-dupe: drop any identical existing rule first
+        self.settings.ip_rules = [
+            r for r in self.settings.ip_rules if not _same_ip_rule(r, rule)]
+        ok, msg = (True, "")
+        if self.settings.firewall_enabled:
+            ok, msg = firewall.add_ip_rule(exe, action, direction, remote_ip,
+                                           ports, protocol)
+        if ok:
+            self.settings.ip_rules.append(rule)
+            self.settings.save()
+        return ok, msg
+
+    def remove_ip_rule(self, rule: dict) -> tuple:
+        from . import firewall
+        ok, msg = firewall.remove_ip_rule(
+            rule.get("exe", ""), rule.get("action", ""),
+            rule.get("direction", ""), rule.get("remote_ip", ""),
+            rule.get("ports", ""), rule.get("protocol", "any"))
+        self.settings.ip_rules = [
+            r for r in self.settings.ip_rules if not _same_ip_rule(r, rule)]
+        self.settings.save()
+        return ok, msg
+
+    def ip_rules_for(self, exe: str) -> list:
+        return self.settings.ip_rules_for(exe)
+
+    def all_ip_rules(self) -> list:
+        return list(self.settings.ip_rules)
 
     # ---- lockdown mode ----------------------------------------------------
     def set_lockdown(self, enabled: bool) -> None:

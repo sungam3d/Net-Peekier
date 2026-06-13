@@ -22,6 +22,7 @@ from typing import List, Tuple
 
 RULE_PREFIX = "NetPeekier"
 _MARKER = f"{RULE_PREFIX} block "
+_IP_MARKER = f"{RULE_PREFIX} ip "        # per-IP allow/block rules
 
 
 def _is_windows() -> bool:
@@ -139,6 +140,167 @@ def list_blocked() -> list[str]:
         if _valid_exe(exe):
             exes.add(exe)
     return sorted(exes)
+
+
+import hashlib
+import ipaddress
+
+
+def _valid_ip_spec(spec: str) -> bool:
+    """Accept a single IP, a CIDR subnet, an a.b.c.d-e.f.g.h range, or a
+    comma-separated list of those. Rejects anything else so we never feed netsh
+    a malformed remoteip."""
+    if not spec or not isinstance(spec, str):
+        return False
+    spec = spec.strip()
+    if spec.lower() in ("any", "*"):
+        return True
+    for part in spec.split(","):
+        p = part.strip()
+        if not p:
+            return False
+        try:
+            if "-" in p:
+                lo, hi = p.split("-", 1)
+                ipaddress.ip_address(lo.strip())
+                ipaddress.ip_address(hi.strip())
+            elif "/" in p:
+                ipaddress.ip_network(p, strict=False)
+            else:
+                ipaddress.ip_address(p)
+        except Exception:
+            return False
+    return True
+
+
+def _valid_ports(spec: str) -> bool:
+    """Empty (= all ports) is fine; otherwise a comma list of ports / ranges."""
+    if not spec:
+        return True
+    for part in str(spec).split(","):
+        p = part.strip()
+        if not p:
+            return False
+        try:
+            if "-" in p:
+                a, b = p.split("-", 1)
+                if not (0 < int(a) <= 65535 and 0 < int(b) <= 65535):
+                    return False
+            else:
+                if not 0 < int(p) <= 65535:
+                    return False
+        except Exception:
+            return False
+    return True
+
+
+def _ip_rule_id(exe: str, action: str, direction: str, remote_ip: str,
+                ports: str, protocol: str) -> str:
+    raw = f"{exe}|{action}|{direction}|{remote_ip}|{ports}|{protocol}".lower()
+    return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:12]
+
+
+def _ip_rule_name(rule_id: str, direction: str, proto: str) -> str:
+    return f"{_IP_MARKER}{rule_id} {direction} {proto}"
+
+
+def _concrete_dirs(direction: str):
+    return ("in", "out") if direction == "both" else (direction,)
+
+
+def _concrete_protos(protocol: str, ports: str):
+    protocol = (protocol or "any").lower()
+    if protocol in ("tcp", "udp"):
+        return (protocol,)
+    # 'any' protocol: if ports are specified, netsh requires TCP/UDP, so split
+    if ports:
+        return ("tcp", "udp")
+    return ("any",)
+
+
+def add_ip_rule(exe: str, action: str, direction: str, remote_ip: str,
+                ports: str = "", protocol: str = "any") -> Tuple[bool, str]:
+    """Create a per-IP firewall rule scoped to one program.
+
+    action: 'allow' | 'block'; direction: 'in'|'out'|'both';
+    remote_ip: IP / CIDR / range / comma-list / 'any';
+    ports: '' (all) or comma list/ranges; protocol: 'tcp'|'udp'|'any'.
+
+    NOTE on Windows semantics: explicit BLOCK rules take precedence over ALLOW
+    rules, so an allow rule cannot punch a hole through a whole-app block. Use
+    allow rules to *restrict* an otherwise-open app to certain destinations, and
+    block rules to carve specific destinations out of an app.
+    """
+    if not _valid_exe(exe):
+        return False, f"Refusing: not a valid executable path ({exe!r})."
+    if action not in ("allow", "block"):
+        return False, f"Bad action {action!r}."
+    if direction not in ("in", "out", "both"):
+        return False, f"Bad direction {direction!r}."
+    if not _valid_ip_spec(remote_ip):
+        return False, f"Bad remote IP/range ({remote_ip!r})."
+    if not _valid_ports(ports):
+        return False, f"Bad ports ({ports!r})."
+    exe = exe.strip().strip('"')
+    rid = _ip_rule_id(exe, action, direction, remote_ip, ports, protocol)
+    ok, msgs = True, []
+    for d in _concrete_dirs(direction):
+        for proto in _concrete_protos(protocol, ports):
+            args = [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={_ip_rule_name(rid, d, proto)}",
+                f"dir={d}", f"action={action}",
+                f"program={exe}", "enable=yes", "profile=any",
+            ]
+            if remote_ip.strip().lower() not in ("any", "*"):
+                args.append(f"remoteip={remote_ip.strip()}")
+            if proto != "any":
+                args.append(f"protocol={proto}")
+            if ports:
+                args.append(f"remoteport={ports}")
+            rc, out = _run(args)
+            ok = ok and rc == 0
+            if rc != 0:
+                msgs.append(out.strip())
+    return ok, ("\n".join(msgs) if msgs else "IP rule added.")
+
+
+def remove_ip_rule(exe: str, action: str, direction: str, remote_ip: str,
+                   ports: str = "", protocol: str = "any") -> Tuple[bool, str]:
+    exe = (exe or "").strip().strip('"')
+    rid = _ip_rule_id(exe, action, direction, remote_ip, ports, protocol)
+    ok, msgs = True, []
+    for d in _concrete_dirs(direction):
+        for proto in _concrete_protos(protocol, ports):
+            rc, out = _run([
+                "netsh", "advfirewall", "firewall", "delete", "rule",
+                f"name={_ip_rule_name(rid, d, proto)}",
+            ])
+            if rc != 0 and "No rules match" not in out:
+                ok = False
+                msgs.append(out.strip())
+    return ok, ("\n".join(msgs) if msgs else "IP rule removed.")
+
+
+def remove_all_ip_rules() -> int:
+    """Delete every per-IP rule we created (matched by our IP marker)."""
+    rc, out = _run([
+        "netsh", "advfirewall", "firewall", "show", "rule", "name=all"])
+    if rc != 0:
+        return 0
+    names = set()
+    for line in out.splitlines():
+        if _IP_MARKER in line:
+            idx = line.find(_IP_MARKER)
+            names.add(line[idx:].strip())
+    removed = 0
+    for name in names:
+        r2, _o = _run([
+            "netsh", "advfirewall", "firewall", "delete", "rule",
+            f"name={name}"])
+        if r2 == 0:
+            removed += 1
+    return removed
 
 
 def remove_all_rules() -> Tuple[int, str]:

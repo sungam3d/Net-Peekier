@@ -67,6 +67,9 @@ class Settings:
     allowed_exes: List[str] = field(default_factory=list)   # permanent allow
     tag_allowed: List[str] = field(default_factory=list)    # tags allowed
     allow_minutes: int = 5
+    # per-IP firewall rules: list of dicts
+    # {exe, action, direction, remote_ip, ports, protocol, note}
+    ip_rules: List[dict] = field(default_factory=list)
 
     # ---- convenience views -----------------------------------------------
     def exe_limit(self, exe: str) -> Tuple[int, int]:
@@ -83,6 +86,9 @@ class Settings:
     def all_tags(self) -> List[str]:
         return sorted(set(self.exe_tags.values()) | set(self.tag_limits)
                       | set(self.tag_blocked) | set(self.tag_allowed))
+
+    def ip_rules_for(self, exe: str) -> List[dict]:
+        return [r for r in self.ip_rules if r.get("exe") == exe]
 
     def is_allowed_exe(self, exe: str) -> bool:
         """True if this exe is on the permanent allow list, directly or via an
@@ -147,6 +153,8 @@ class Settings:
             s.tag_allowed = list(data.get("tag_allowed", []))
             am = data.get("allow_minutes", 5)
             s.allow_minutes = int(am) if am else 5
+            s.ip_rules = [dict(r) for r in data.get("ip_rules", [])
+                          if isinstance(r, dict)]
         except Exception:
             pass
         return s
@@ -173,6 +181,7 @@ class Settings:
                     "allowed_exes": self.allowed_exes,
                     "tag_allowed": self.tag_allowed,
                     "allow_minutes": self.allow_minutes,
+                    "ip_rules": self.ip_rules,
                 }, f, indent=2)
         except Exception:
             pass

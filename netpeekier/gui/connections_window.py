@@ -71,10 +71,64 @@ class ConnectionsWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.tree.bind("<Double-1>", self._on_double_click)
+        self._build_ctx_menu()
+        self.tree.bind("<Button-3>", self._on_right_click)
 
         from .winutil import center_on_parent
         center_on_parent(self, master)
         self.after(REFRESH_MS, self._refresh)
+
+    def _build_ctx_menu(self) -> None:
+        self.ctx = tk.Menu(self, tearoff=0)
+        self.ctx.add_command(label="Allow this IP:port for this app",
+                             command=lambda: self._ip_rule_from_sel("allow"))
+        self.ctx.add_command(label="Block this IP:port for this app",
+                             command=lambda: self._ip_rule_from_sel("block"))
+        self.ctx.add_separator()
+        self.ctx.add_command(label="Allow this IP (all ports)",
+                             command=lambda: self._ip_rule_from_sel("allow", True))
+        self.ctx.add_command(label="Block this IP (all ports)",
+                             command=lambda: self._ip_rule_from_sel("block", True))
+
+    def _on_right_click(self, event) -> None:
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            self.tree.selection_set(iid)
+            self.tree.focus(iid)
+            self.ctx.tk_popup(event.x_root, event.y_root)
+
+    def _ip_rule_from_sel(self, action: str, all_ports: bool = False) -> None:
+        from tkinter import messagebox
+        iid = self.tree.focus()
+        if not iid or iid.count("|") != 4:
+            return
+        proto, lip, lport, rip, rport = iid.split("|")
+        exe = self.monitor.procmap.exe(self.pid)
+        if not exe:
+            from .winutil import centered_message
+            centered_message(self, "info", "IP rule",
+                             "No executable path available for this process "
+                             "(try running as Administrator).")
+            return
+        if not rip or rip in ("-", "0.0.0.0", "::"):
+            from .winutil import centered_message
+            centered_message(self, "info", "IP rule",
+                             "This connection has no specific remote IP to add "
+                             "a rule for.")
+            return
+        ports = "" if all_ports else (rport if rport and rport != "0" else "")
+        # outbound is the meaningful direction for a remote endpoint
+        ok, msg = self.monitor.add_ip_rule(
+            exe, action, "out", rip, ports,
+            proto.lower() if proto.lower() in ("tcp", "udp") else "any")
+        from .winutil import centered_message
+        if ok:
+            scope = rip if all_ports else f"{rip}:{rport}"
+            centered_message(self, "info", "IP rule",
+                             f"{action.title()} rule added for {scope}.")
+        else:
+            centered_message(self, "error", "IP rule",
+                             msg or "Failed to add rule (need admin?).")
 
     def _close(self) -> None:
         capture_widths(self.tree, "connections", self.monitor.settings, _COLS)

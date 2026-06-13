@@ -233,17 +233,25 @@ class ProcessPicker(tk.Toplevel):
 
 
 class FirewallManagerWindow(tk.Toplevel):
+    TABS = ("All Rules", "Blocked Rules", "Allowed Rules", "IP Rules",
+            "Tag Rules", "No Rules")
+
     def __init__(self, master, monitor: Monitor) -> None:
         super().__init__(master)
         self.monitor = monitor
         self.title("Net-Peekier - Firewall and Tags")
-        self.geometry("800x440")
+        self.geometry("840x470")
+        self._tab = "All Rules"
 
-        self._build_table()
+        self._build_tabs()
+        self._build_table()        # apps tree (used by app-filter tabs)
+        self._build_ip_table()     # IP-rules tree
+        self._build_tag_panel()    # embedded tag rules
         self._build_buttons()
         restore_widths(self.tree, "firewall", self.monitor.settings,
                        ("#0", "blocked", "allowed", "up", "down", "tag", "path"))
         self.protocol("WM_DELETE_WINDOW", self._close)
+        self._select_tab("All Rules")
         self._refresh()
         from .winutil import center_on_parent
         center_on_parent(self, master)
@@ -261,9 +269,47 @@ class FirewallManagerWindow(tk.Toplevel):
                        ("#0", "blocked", "allowed", "up", "down", "tag", "path"))
         self.destroy()
 
+    # ---- tabs -------------------------------------------------------------
+    def _build_tabs(self) -> None:
+        bar = tk.Frame(self, bg="#cdd4dd")
+        bar.pack(side="top", fill="x")
+        self._tab_btns = {}
+        for name in self.TABS:
+            b = tk.Label(bar, text=name, padx=12, pady=6, bg="#cdd4dd",
+                         font=("Segoe UI", 9), cursor="hand2")
+            b.pack(side="left", padx=(2, 0), pady=(2, 0))
+            b.bind("<Button-1>", lambda _e, n=name: self._select_tab(n))
+            self._tab_btns[name] = b
+
+    def _select_tab(self, name: str) -> None:
+        self._tab = name
+        for n, b in self._tab_btns.items():
+            if n == name:
+                b.configure(bg="white", font=("Segoe UI", 9, "bold"))
+            else:
+                b.configure(bg="#cdd4dd", font=("Segoe UI", 9))
+        # show the right body
+        is_ip = name == "IP Rules"
+        is_tag = name == "Tag Rules"
+        self._apps_frame.pack_forget()
+        self._ip_frame.pack_forget()
+        self._tag_frame.pack_forget()
+        if is_ip:
+            self._ip_frame.pack(side="top", fill="both", expand=True,
+                                padx=6, pady=6)
+        elif is_tag:
+            self._tag_frame.pack(side="top", fill="both", expand=True,
+                                 padx=6, pady=6)
+        else:
+            self._apps_frame.pack(side="top", fill="both", expand=True,
+                                  padx=6, pady=6)
+        self._update_buttons_for_tab()
+        self._refresh()
+
     # ---- layout -----------------------------------------------------------
     def _build_table(self) -> None:
         frame = tk.Frame(self)
+        self._apps_frame = frame
         frame.pack(side="top", fill="both", expand=True, padx=6, pady=6)
 
         cols = ("blocked", "allowed", "up", "down", "tag", "path")
@@ -295,31 +341,94 @@ class FirewallManagerWindow(tk.Toplevel):
         init_table(self.tree)
         self.tree.bind("<Double-1>", lambda _e: self._edit())
 
+    def _build_ip_table(self) -> None:
+        frame = tk.Frame(self)
+        self._ip_frame = frame
+        cols = ("app", "action", "dir", "ip", "ports", "proto", "path")
+        self.ip_tree = ttk.Treeview(frame, columns=cols, show="headings")
+        layout = {"app": ("Application", 130), "action": ("Action", 60),
+                  "dir": ("Dir", 50), "ip": ("Remote IP / range", 150),
+                  "ports": ("Ports", 90), "proto": ("Proto", 55),
+                  "path": ("Path", 210)}
+        for c, (txt, w) in layout.items():
+            self.ip_tree.heading(c, text=txt)
+            self.ip_tree.column(c, width=w,
+                                anchor="center" if c in ("action", "dir", "proto")
+                                else "w")
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.ip_tree.yview)
+        self.ip_tree.configure(yscrollcommand=vsb.set)
+        self.ip_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        init_table(self.ip_tree)
+        self.ip_tree.bind("<Double-1>", lambda _e: self._edit_ip_rule())
+
+    def _build_tag_panel(self) -> None:
+        self._tag_frame = tk.Frame(self)
+        self._tag_panel = TagRulesPanel(self._tag_frame, self.monitor)
+        self._tag_panel.pack(fill="both", expand=True)
+
     def _build_buttons(self) -> None:
         bar = tk.Frame(self)
         bar.pack(side="bottom", fill="x", padx=6, pady=(0, 8))
-        tk.Button(bar, text="Add running app...",
+        self._btnbar = bar
+        # app-tab buttons
+        self._app_btns = tk.Frame(bar)
+        tk.Button(self._app_btns, text="Add running app...",
                   command=self._add_running).pack(side="left", padx=2)
-        tk.Button(bar, text="Add by path...",
+        tk.Button(self._app_btns, text="Add by path...",
                   command=self._add_by_path).pack(side="left", padx=2)
-        tk.Button(bar, text="Edit...", command=self._edit).pack(
+        tk.Button(self._app_btns, text="Edit...", command=self._edit).pack(
             side="left", padx=2)
-        tk.Button(bar, text="Remove", command=self._remove).pack(
+        tk.Button(self._app_btns, text="Remove", command=self._remove).pack(
             side="left", padx=2)
-        tk.Button(bar, text="Tag rules...", command=self._open_tag_rules).pack(
-            side="left", padx=10)
+        # ip-tab buttons
+        self._ip_btns = tk.Frame(bar)
+        tk.Button(self._ip_btns, text="Add IP rule...",
+                  command=self._add_ip_rule).pack(side="left", padx=2)
+        tk.Button(self._ip_btns, text="Edit...",
+                  command=self._edit_ip_rule).pack(side="left", padx=2)
+        tk.Button(self._ip_btns, text="Remove",
+                  command=self._remove_ip_rule).pack(side="left", padx=2)
+        # tag-tab buttons
+        self._tag_btns = tk.Frame(bar)
+        tk.Button(self._tag_btns, text="Add tag rule...",
+                  command=lambda: self._tag_panel.add_rule()).pack(
+            side="left", padx=2)
+        tk.Button(self._tag_btns, text="Edit...",
+                  command=lambda: self._tag_panel.edit_selected()).pack(
+            side="left", padx=2)
+        tk.Button(self._tag_btns, text="Remove",
+                  command=lambda: self._tag_panel.remove_selected()).pack(
+            side="left", padx=2)
         tk.Button(bar, text="Close", command=self._close).pack(
             side="right", padx=2)
 
+    def _update_buttons_for_tab(self) -> None:
+        self._app_btns.pack_forget()
+        self._ip_btns.pack_forget()
+        self._tag_btns.pack_forget()
+        if self._tab == "IP Rules":
+            self._ip_btns.pack(side="left")
+        elif self._tab == "Tag Rules":
+            self._tag_btns.pack(side="left")
+        else:
+            self._app_btns.pack(side="left")
+
     def _open_tag_rules(self) -> None:
-        if getattr(self, "_tagwin", None) and self._tagwin.winfo_exists():
-            self._tagwin.lift()
-            return
-        self._tagwin = TagRulesWindow(self, self.monitor)
+        self._select_tab("Tag Rules")
 
     # ---- data -------------------------------------------------------------
     def _refresh(self) -> None:
         if not self.winfo_exists():
+            return
+        tab = getattr(self, "_tab", "All Rules")
+        if tab == "IP Rules":
+            self._refresh_ip()
+            return
+        if tab == "Tag Rules":
+            self._tag_panel.refresh()
             return
         selected = self._selected_exe()
         self.tree.delete(*self.tree.get_children())
@@ -327,6 +436,15 @@ class FirewallManagerWindow(tk.Toplevel):
         rowtags: dict = {}
         for exe, (blocked, (up, down), tag, from_tag, via_tag) in \
                 self.monitor.managed_apps().items():
+            allowed_now, _avt = self.monitor.allow_state(exe)
+            has_limit = bool(up or down)
+            # tab filter
+            if tab == "Blocked Rules" and not blocked:
+                continue
+            if tab == "Allowed Rules" and not allowed_now:
+                continue
+            if tab == "No Rules" and (blocked or allowed_now or has_limit or tag):
+                continue
             iid = exe
             allowed, allow_via_tag = self.monitor.allow_state(exe)
             allow_txt = ("Yes (tag)" if (allowed and allow_via_tag)
@@ -354,8 +472,108 @@ class FirewallManagerWindow(tk.Toplevel):
         self._sortkeys = sortkeys
         self.sorter.apply()
         apply_stripes(self.tree, rowtags)
+        if getattr(self, "_tab", "") == "No Rules":
+            self._augment_no_rules(rowtags)
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
+
+    def _augment_no_rules(self, rowtags: dict) -> None:
+        """The managed list only contains apps that already have a rule, so for
+        the No Rules tab we add currently-running executables that have none."""
+        try:
+            procs, _ = self.monitor.snapshot()
+        except Exception:
+            return
+        seen = set(self.tree.get_children())
+        s = self.monitor.settings
+        for p in procs:
+            exe = p.exe
+            if not exe or exe in seen:
+                continue
+            if (exe in s.blocked_exes or s.is_allowed_exe(exe)
+                    or s.exe_tags.get(exe) or s.exe_limit(exe) != (0, 0)
+                    or s.ip_rules_for(exe)):
+                continue
+            seen.add(exe)
+            self.tree.insert("", "end", iid=exe,
+                             text=os.path.basename(exe) or exe,
+                             values=("No", "No", "-", "-", "", exe))
+
+    def _refresh_ip(self) -> None:
+        sel = self.ip_tree.selection()
+        sel_id = sel[0] if sel else None
+        self.ip_tree.delete(*self.ip_tree.get_children())
+        rowtags = {}
+        for i, r in enumerate(self.monitor.all_ip_rules()):
+            exe = r.get("exe", "")
+            iid = str(i)
+            self.ip_tree.insert(
+                "", "end", iid=iid,
+                values=(os.path.basename(exe) or exe, r.get("action", ""),
+                        r.get("direction", ""), r.get("remote_ip", ""),
+                        r.get("ports", "") or "all", r.get("protocol", "any"),
+                        exe))
+            rowtags[iid] = ("blocked",) if r.get("action") == "block" else ()
+        apply_stripes(self.ip_tree, rowtags)
+        if sel_id and self.ip_tree.exists(sel_id):
+            self.ip_tree.selection_set(sel_id)
+
+    # ---- IP rule actions --------------------------------------------------
+    def _add_ip_rule(self) -> None:
+        # pre-fill exe from the app tab selection if any
+        exe = self._selected_exe() or ""
+        dlg = IPRuleDialog(self, exe)
+        self.wait_window(dlg)
+        if dlg.result is None:
+            return
+        exe2, action, direction, ip, ports, proto = dlg.result
+        ok, msg = self.monitor.add_ip_rule(exe2, action, direction, ip, ports,
+                                           proto)
+        if not ok:
+            from .winutil import centered_message
+            centered_message(self, "error", "IP rule",
+                             msg or "Failed (need admin?).")
+        self._refresh_ip()
+
+    def _selected_ip_rule(self):
+        sel = self.ip_tree.selection()
+        if not sel:
+            return None
+        try:
+            return self.monitor.all_ip_rules()[int(sel[0])]
+        except (ValueError, IndexError):
+            return None
+
+    def _edit_ip_rule(self) -> None:
+        rule = self._selected_ip_rule()
+        if not rule:
+            from .winutil import centered_message
+            centered_message(self, "info", "IP rule",
+                             "Select an IP rule to edit, or use 'Add IP rule'.")
+            return
+        dlg = IPRuleDialog(self, rule.get("exe", ""), rule)
+        self.wait_window(dlg)
+        if dlg.result is None:
+            return
+        # edit = remove old + add new
+        self.monitor.remove_ip_rule(dict(rule))
+        exe2, action, direction, ip, ports, proto = dlg.result
+        ok, msg = self.monitor.add_ip_rule(exe2, action, direction, ip, ports,
+                                           proto)
+        if not ok:
+            from .winutil import centered_message
+            centered_message(self, "error", "IP rule",
+                             msg or "Failed (need admin?).")
+        self._refresh_ip()
+
+    def _remove_ip_rule(self) -> None:
+        rule = self._selected_ip_rule()
+        if not rule:
+            from .winutil import centered_message
+            centered_message(self, "info", "IP rule", "Select an IP rule first.")
+            return
+        self.monitor.remove_ip_rule(dict(rule))
+        self._refresh_ip()
 
     def _selected_exe(self) -> Optional[str]:
         sel = self.tree.selection()
@@ -660,4 +878,221 @@ class _TagDialog(tk.Toplevel):
                                  parent=self)
             return
         self.result = (self.var_block.get(), up * 1024, down * 1024)
+        self.destroy()
+
+
+class TagRulesPanel(tk.Frame):
+    """Embeddable tag-rules view (same behaviour as the old TagRulesWindow, but
+    as a frame so it can live inside the Firewall and Tags tabs)."""
+
+    def __init__(self, master, monitor: Monitor) -> None:
+        super().__init__(master)
+        self.monitor = monitor
+        cols = ("members", "blocked", "up", "down")
+        self.tree = ttk.Treeview(self, columns=cols, show="tree headings")
+        self.tree.heading("#0", text="Tag")
+        self.tree.heading("members", text="Apps")
+        self.tree.heading("blocked", text="Blocked")
+        self.tree.heading("up", text="Upload limit")
+        self.tree.heading("down", text="Download limit")
+        self.tree.column("#0", width=120, anchor="w")
+        self.tree.column("members", width=55, anchor="center")
+        self.tree.column("blocked", width=62, anchor="center")
+        self.tree.column("up", width=110, anchor="e")
+        self.tree.column("down", width=110, anchor="e")
+        init_table(self.tree)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.tree.tag_configure("blocked", foreground="#b00000")
+        self.tree.bind("<Double-1>", lambda _e: self.edit_selected())
+
+    def refresh(self) -> None:
+        sel = self.tree.selection()
+        keep = sel[0] if sel else None
+        self.tree.delete(*self.tree.get_children())
+        s = self.monitor.settings
+        rowtags = {}
+        ruled = sorted(set(s.tag_limits) | set(s.tag_blocked))
+        for tag in ruled:
+            up, down = s.tag_limit(tag)
+            blocked = tag in s.tag_blocked
+            members = len(s.exes_with_tag(tag))
+            self.tree.insert("", "end", iid=tag, text=tag,
+                             values=(members, "Yes" if blocked else "No",
+                                     _fmt_limit(up), _fmt_limit(down)))
+            rowtags[tag] = ("blocked",) if blocked else ()
+        apply_stripes(self.tree, rowtags)
+        if keep and self.tree.exists(keep):
+            self.tree.selection_set(keep)
+
+    def add_rule(self) -> None:
+        from .tag_picker import ask_tag
+        s = self.monitor.settings
+        candidates = [t for t in s.all_tags()
+                      if t not in s.tag_limits and t not in s.tag_blocked]
+        if not candidates and not s.exe_tags:
+            from .winutil import centered_message
+            centered_message(self, "info", "Add tag rule",
+                             "No tags yet. Assign a tag to some processes first "
+                             "(main list > right-click > Set tag).")
+            return
+        tag = ask_tag(self, "Add tag rule",
+                      "Choose a tag to add a block or speed limit for.",
+                      existing=candidates or s.all_tags())
+        if tag:
+            self._edit_tag(tag)
+
+    def edit_selected(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            from .winutil import centered_message
+            centered_message(self, "info", "Tag rules",
+                             "Select a tag rule to edit, or use 'Add tag rule'.")
+            return
+        self._edit_tag(sel[0])
+
+    def _edit_tag(self, tag: str) -> None:
+        s = self.monitor.settings
+        up, down = s.tag_limit(tag)
+        dlg = _TagDialog(self, tag, tag in s.tag_blocked, up, down)
+        self.wait_window(dlg)
+        if dlg.result is None:
+            return
+        new_blocked, new_up, new_down = dlg.result
+        self.monitor.set_tag_limit(tag, new_up, new_down)
+        self.monitor.set_tag_blocked(tag, new_blocked)
+        self.refresh()
+
+    def remove_selected(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            from .winutil import centered_message
+            centered_message(self, "info", "Tag rules", "Select a tag rule first.")
+            return
+        tag = sel[0]
+        if not messagebox.askyesno(
+                "Remove tag rule",
+                f"Remove the block/limit rule for tag '{tag}'?\n\n"
+                "(Processes keep the tag; only the group rule is removed.)",
+                parent=self):
+            return
+        self.monitor.set_tag_limit(tag, 0, 0)
+        self.monitor.set_tag_blocked(tag, False)
+        self.refresh()
+
+
+class IPRuleDialog(tk.Toplevel):
+    """Add/edit a per-IP firewall rule scoped to one program."""
+
+    def __init__(self, master, exe: str = "", rule: dict = None) -> None:
+        super().__init__(master)
+        self.title("IP rule")
+        self.resizable(False, False)
+        self.transient(master)
+        self.result = None
+        rule = rule or {}
+        pad = {"padx": 8, "pady": 5}
+
+        tk.Label(self, text="Application (.exe path):").grid(
+            row=0, column=0, sticky="w", **pad)
+        self.var_exe = tk.StringVar(value=rule.get("exe", exe))
+        row0 = tk.Frame(self)
+        row0.grid(row=0, column=1, sticky="w", **pad)
+        tk.Entry(row0, textvariable=self.var_exe, width=34).pack(side="left")
+        tk.Button(row0, text="...", width=2, command=self._browse).pack(
+            side="left", padx=(3, 0))
+
+        tk.Label(self, text="Action:").grid(row=1, column=0, sticky="w", **pad)
+        self.var_action = tk.StringVar(value=rule.get("action", "block"))
+        af = tk.Frame(self)
+        af.grid(row=1, column=1, sticky="w", **pad)
+        for val in ("block", "allow"):
+            tk.Radiobutton(af, text=val.title(), value=val,
+                           variable=self.var_action).pack(side="left")
+
+        tk.Label(self, text="Direction:").grid(row=2, column=0, sticky="w", **pad)
+        self.var_dir = tk.StringVar(value=rule.get("direction", "out"))
+        df = tk.Frame(self)
+        df.grid(row=2, column=1, sticky="w", **pad)
+        for val, lab in (("out", "Outbound"), ("in", "Inbound"),
+                         ("both", "Both")):
+            tk.Radiobutton(df, text=lab, value=val,
+                           variable=self.var_dir).pack(side="left")
+
+        tk.Label(self, text="Remote IP / range:").grid(
+            row=3, column=0, sticky="w", **pad)
+        self.var_ip = tk.StringVar(value=rule.get("remote_ip", ""))
+        tk.Entry(self, textvariable=self.var_ip, width=30).grid(
+            row=3, column=1, sticky="w", **pad)
+        tk.Label(self, fg="#666",
+                 text="e.g. 1.2.3.4   |   10.0.0.0/24   |   1.2.3.4-1.2.3.10",
+                 font=("Segoe UI", 8)).grid(row=4, column=1, sticky="w", padx=8)
+
+        tk.Label(self, text="Ports (blank = all):").grid(
+            row=5, column=0, sticky="w", **pad)
+        self.var_ports = tk.StringVar(value=rule.get("ports", ""))
+        tk.Entry(self, textvariable=self.var_ports, width=20).grid(
+            row=5, column=1, sticky="w", **pad)
+        tk.Label(self, fg="#666", text="e.g. 443   or   80,443,8000-8100",
+                 font=("Segoe UI", 8)).grid(row=6, column=1, sticky="w", padx=8)
+
+        tk.Label(self, text="Protocol:").grid(row=7, column=0, sticky="w", **pad)
+        self.var_proto = tk.StringVar(value=rule.get("protocol", "any"))
+        pf = tk.Frame(self)
+        pf.grid(row=7, column=1, sticky="w", **pad)
+        for val in ("any", "tcp", "udp"):
+            tk.Radiobutton(pf, text=val.upper(), value=val,
+                           variable=self.var_proto).pack(side="left")
+
+        tk.Label(self, fg="#806000", wraplength=360, justify="left",
+                 font=("Segoe UI", 8),
+                 text="Note: Windows Firewall evaluates BLOCK before ALLOW, so "
+                      "an allow rule can't override a full app block. Use allow "
+                      "rules to restrict an open app to certain destinations.").grid(
+            row=8, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 0))
+
+        btns = tk.Frame(self)
+        btns.grid(row=9, column=0, columnspan=2, pady=(8, 8))
+        tk.Button(btns, text="OK", width=10, command=self._ok).pack(
+            side="left", padx=4)
+        tk.Button(btns, text="Cancel", width=10, command=self.destroy).pack(
+            side="left", padx=4)
+        self.bind("<Return>", lambda _e: self._ok())
+        from .winutil import center_on_parent
+        center_on_parent(self, master)
+        self.grab_set()
+
+    def _browse(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Choose an executable",
+            filetypes=[("Executables", "*.exe"), ("All files", "*.*")],
+            parent=self)
+        if path:
+            self.var_exe.set(os.path.normpath(path))
+
+    def _ok(self) -> None:
+        exe = self.var_exe.get().strip().strip('"')
+        ip = self.var_ip.get().strip()
+        ports = self.var_ports.get().strip()
+        if not firewall._valid_exe(exe):
+            from .winutil import centered_message
+            centered_message(self, "error", "IP rule",
+                             "Enter a valid absolute path to an .exe.")
+            return
+        if not firewall._valid_ip_spec(ip):
+            from .winutil import centered_message
+            centered_message(self, "error", "IP rule",
+                             "Enter a valid IP, CIDR subnet, or a-b range.")
+            return
+        if not firewall._valid_ports(ports):
+            from .winutil import centered_message
+            centered_message(self, "error", "IP rule",
+                             "Ports must be numbers 1-65535 (comma/range ok).")
+            return
+        self.result = (exe, self.var_action.get(), self.var_dir.get(),
+                       ip, ports, self.var_proto.get())
         self.destroy()

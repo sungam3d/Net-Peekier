@@ -1,5 +1,5 @@
 # Net-Peekier
-##### v1.0.19
+##### v1.0.20
 
 A small, dependency-light per-process network monitor inspired by the old
 **NetPeeker** — built in Python with a Tkinter GUI. It shows live upload/
@@ -160,22 +160,48 @@ It's on by default and its state is saved to `settings.txt`.
 ## Firewall and Tags (manager)
 
 Open it from **Settings ▸ Firewall and Tags** (or right-click an app).
-It lists every managed app in one table — blocked state, upload limit, download
-limit and path — independent of whether the app is currently running.
+Rules are organised into **tabs** along the top:
+
+- **All Rules** — every app that has any rule (block, allow, limit or tag).
+- **Blocked Rules** / **Allowed Rules** — filtered to just those.
+- **IP Rules** — per-IP firewall rules (see below).
+- **Tag Rules** — the group-tag block/limit rules (this replaces the old
+  separate Tag rules window and its button — it's now a tab here).
+- **No Rules** — running apps that currently have no rule, to add one quickly.
+
+The app tabs share one table — blocked state, allow state, limits, tag and path
+— independent of whether the app is currently running.
 
 - **Add running app...** — pick from processes that currently have network
   activity (only ones with a resolvable executable path can be managed).
 - **Add by path...** — browse to any `.exe`.
-- **Edit...** (or double-click a row) — a small dialog with a *Block* checkbox,
-  *Upload/Download limit* fields in KB/s (0 = unlimited), and a *Tag* field.
+- **Edit...** (or double-click a row) — a dialog with *Block* / *Allow*
+  checkboxes, *Upload/Download limit* fields in KB/s (0 = unlimited), and a
+  *Tag* field.
 - **Remove** — clears the block, limit and tag for that app.
-- **Tag rules...** — manage group rules (see Tag groups below).
 
-The manager and the tag-rules window update **live** — any change you make
-(here, from the main list, or to a tag) is reflected immediately, so there's no
-Refresh button to press. On the main list, blocking or limiting a selected row
-also updates its highlight at once (a blocked row's selection turns red without
-needing to click away and back).
+### Per-IP rules
+
+A per-IP rule scopes a firewall rule to one program **and** a remote IP, range
+or subnet, optionally narrowed to specific ports and a protocol. Add them on the
+**IP Rules** tab (**Add IP rule...**), or — more conveniently — from a process's
+**Detail Information** window: right-click a connection and choose *Allow/Block
+this IP:port for this app* (or the all-ports variants). They're saved in
+`settings.txt` and re-applied whenever the firewall is (re)enabled.
+
+> **Windows Firewall semantics — important.** Windows evaluates **block rules
+> before allow rules**, so an *allow* IP-rule cannot punch a hole through a
+> whole-app block. Use **block** IP-rules to carve specific destinations out of
+> an otherwise-open app, and **allow** IP-rules to *restrict* an open app toward
+> certain destinations. A strict "this app may ONLY reach X" (per-app default
+> deny) isn't expressible in plain Windows Firewall without a global
+> default-deny, which Net-Peekier deliberately never sets. The IP-rule dialog
+> repeats this note inline.
+
+The manager updates **live** — any change you make (here, from the main list, or
+to a tag) is reflected immediately, so there's no Refresh button to press. On the
+main list, blocking or limiting a selected row also updates its highlight at once
+(a blocked row's selection turns red without needing to click away and back).
 
 Rules are keyed by **executable path**, so they stick to the app across
 restarts rather than to a one-off PID. Blocks are applied through Windows
