@@ -22,6 +22,11 @@ pydivert>=2.1 ; platform_system == "Windows"
 # thin pythonnet layer (pulls in pythonnet; needs .NET and Administrator).
 # Without it, temperature fields simply show "--".
 #     pip install HardwareMonitor
+#
+# NOTE: many motherboard/CPU sensors also require the PawnIO kernel driver.
+# It is NOT a pip package -- install it once via winget (then reboot if asked):
+#     winget install PawnIO
+# Without PawnIO, CPU package temperature often reads as unavailable.
 HardwareMonitor>=0.9 ; platform_system == "Windows"
 
 # Optional: NVIDIA GPU fallback ----------------------------------------------
